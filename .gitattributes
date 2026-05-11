@@ -1,0 +1,6 @@
+# Default: leave alone, no CRLF conversion
+* -text
+
+# Shell scripts must keep LF for Linux
+*.sh text eol=lf
+start.sh text eol=lf

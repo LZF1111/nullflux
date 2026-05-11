@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>NullFlux</title>
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" data-name="vs/editor/editor.main"
+        href="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/editor/editor.main.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">Null<span class="accent">Flux</span><span class="author-tag">by LZF</span></div>
+    <div class="meta">
+      <button id="open-folder" title="打开文件夹">文件夹</button>
+      <button id="open-file" title="打开文件">打开文件</button>
+      <span id="ws-display" class="ws-display muted"></span>
+      <span id="model-info" class="muted"></span>
+      <label class="toggle"><input type="checkbox" id="auto-mode" checked /> Auto</label>
+      <label class="toggle sim"><input type="checkbox" id="sim-mode" /> 仿真</label>
+      <button id="py-picker" class="py-btn" title="选择 Python 环境">Python: <span id="py-label">未选择</span></button>
+      <button id="model-picker" class="py-btn" style="background: rgba(232,121,249,.08) !important; border-color:#a855f7 !important; color:#f0abfc !important;" title="选择 LLM 模型 / 登录 GitHub Copilot">🤖 <span id="model-label">DeepSeek</span></button>
+      <button id="tools-btn" class="py-btn" style="background: rgba(168,85,247,.1) !important; border-color:#7c3aed !important; color:#d8b4fe !important;" title="选择可用工具">🔧 工具</button>
+      <div class="menu-wrap">
+        <button id="view-btn" class="py-btn" title="显示/隐藏面板">👁 视图 ▾</button>
+        <div id="view-menu" class="view-menu" style="display:none;"></div>
+      </div>
+      <button id="reset-layout" title="重置面板位置">⊞ 布局</button>
+      <button id="compact-btn" title="把较早的对话压缩成摘要，释放上下文（防 OOM）">🗜 压缩历史</button>
+      <button id="settings-btn" title="设置">⚙</button>
+      <button id="reset" title="清空对话">清空</button>
+    </div>
+  </header>
+
+  <!-- 浮动面板容器（所有面板均可拖拽/缩放） -->
+  <div id="desktop" class="desktop">
+
+    <!-- 文件树 -->
+    <div class="panel" data-pid="files" data-default="left:8;top:8;width:240;height:340">
+      <div class="panel-head"><span class="grip">⋮⋮</span><span class="ptitle">资源管理器</span>
+        <span class="pacts"><button class="mini" id="refresh-tree" title="刷新">刷新</button><button class="mini" id="new-file" title="新建文件">＋F</button><button class="mini" id="new-folder" title="新建目录">＋D</button></span>
+      </div>
+      <div id="tree" class="tree panel-body" style="overflow:auto;min-height:0;"></div>
+    </div>
+
+    <!-- 待办 -->
+    <div class="panel" data-pid="todos" data-default="left:8;top:352;width:240;height:184">
+      <div class="panel-head"><span class="grip">⋮⋮</span><span class="ptitle">待办</span></div>
+      <div id="todos" class="todos panel-body"><div class="muted small">尚无任务</div></div>
+    </div>
+
+    <!-- 检查点 -->
+    <div class="panel" data-pid="checkpoints" data-default="left:8;top:540;width:240;height:340">
+      <div class="panel-head"><span class="grip">⋮⋮</span><span class="ptitle">检查点</span></div>
+      <div id="checkpoints" class="checkpoints panel-body"><div class="muted small">尚无检查点</div></div>
+    </div>
+
+    <!-- 编辑器 -->
+    <div class="panel" data-pid="editor" data-default="left:256;top:8;width:760;height:440">
+      <div class="panel-head">
+        <span class="grip">⋮⋮</span>
+        <div id="tabs" class="tabs"></div>
+          <span class="pacts"><button class="mini" id="save-file" disabled title="Ctrl+S">保存</button></span>
+      </div>
+      <div id="editor" class="editor panel-body">
+        <div id="editor-host" class="editor-host"></div>
+        <div id="nb-host" class="nb-host" style="display:none;"></div>      <div id="img-host" class="img-host" style="display:none;"></div>
+        <div id="stl-host" class="stl-host" style="display:none;position:relative;width:100%;height:100%;background:#0a0612;"></div>
+        <div id="pdf-host" class="pdf-host" style="display:none;position:relative;width:100%;height:100%;background:#0a0612;"></div>
+        <div id="editor-empty" class="editor-empty">选择文件或让 codeMax 开始工作</div>
+      </div>
+    </div>
+
+    <!-- ParaView 投影窗口（仿真模式才显示） -->
+    <div class="panel sim-panel" data-pid="paraview" data-default="left:256;top:8;width:760;height:440" style="display:none;">
+      <div class="panel-head">
+        <span class="grip">⋮⋮</span>
+        <span class="ptitle">ParaView 预览</span>
+        <span class="pacts">
+          <span id="sim-status" class="small muted">未启动</span>
+          <input id="sim-case-input" type="text" placeholder="case 路径/文件" style="width:130px;font-size:10px;padding:2px 5px;background:var(--bg2);border:1px solid var(--line2);color:var(--text);border-radius:3px;" />
+            <button class="mini" id="sim-browse" title="浏览文件">浏览</button>
+          <button class="mini" id="sim-render" title="pvpython 离屏渲染一帧">渲染</button>
+          <button class="mini" id="sim-rotL" title="左转">↺</button>
+          <button class="mini" id="sim-rotR" title="右转">↻</button>
+          <button class="mini" id="sim-zoomIn" title="放大">+</button>
+          <button class="mini" id="sim-zoomOut" title="缩小">-</button>
+          <button class="mini" id="sim-launch" title="启动 ParaView GUI 独立窗口">GUI</button>
+          <button class="mini" id="sim-close">×</button>
+        </span>
+      </div>
+      <div class="sim-subbar" id="sim-subbar" style="display:flex;align-items:center;gap:6px;padding:4px 8px;background:#0a0612;border-bottom:1px solid var(--line2);font-size:11px;">
+        <span class="muted">场:</span>
+        <select id="sim-field" style="background:#1a0f2e;color:#fff;border:1px solid var(--line2);border-radius:3px;padding:2px 4px;font-size:11px;min-width:90px;"><option value="">(无 / 单色)</option></select>
+        <span class="muted" style="margin-left:8px;">时间步:</span>
+        <button class="mini" id="sim-time-prev" title="上一步">◀</button>
+        <input id="sim-time-slider" type="range" min="0" max="0" value="0" style="flex:1;max-width:200px;" />
+        <button class="mini" id="sim-time-next" title="下一步">▶</button>
+        <span id="sim-time-label" class="small muted" style="min-width:90px;">—</span>
+        <button class="mini" id="sim-inspect" title="重新探测可用场和时间步">↻ 探测</button>
+      </div>
+      <div class="sim-viewport panel-body" id="sim-viewport">
+        <div class="sim-empty"><b>ParaView 预览</b><br/>输入或选择 case 路径，点击 <b>渲染</b><br/>使用 pvpython 离屏渲染 · 渲染后会自动列出可用场与时间步<br/><span class="small muted">需在 ⚙ 设置中填 ParaView 主程序路径（以便推导 pvpython）</span></div>
+      </div>
+    </div>
+
+    <!-- 文件浏览 modal（ParaView 用） -->
+    <div class="modal" id="sim-browse-modal" style="display:none;">
+      <div class="modal-card" style="width:520px;">
+        <div class="modal-head">选择 case 路径 / 文件 <button class="modal-close" id="sim-browse-close">×</button></div>
+        <div class="modal-body">
+          <div id="sim-browse-path" class="muted small" style="margin-bottom:6px;font-family:monospace;">.</div>
+          <div id="sim-browse-list" style="max-height:340px;overflow-y:auto;border:1px solid var(--line2);border-radius:4px;background:#0a0612;"></div>
+          <div class="muted small" style="margin-top:8px;">支持：OpenFOAM 目录、.foam .vtu .vtk .vtp .vtm .stl .cgns .exo .pvd</div>
+        </div>
+        <div class="modal-actions"><button class="no" id="sim-browse-cancel">取消</button></div>
+      </div>
+    </div>
+
+    <!-- 图片库（agent 找到的图片自动汇集） -->
+    <div class="panel" data-pid="gallery" data-default="left:1024;top:612;width:380;height:268" style="display:none;">
+      <div class="panel-head">
+        <span class="grip">⋮⋮</span>
+          <span class="ptitle">图片库 <span id="gal-count" class="small muted">0</span></span>
+        <span class="pacts">
+          <input id="gal-prompt" type="text" placeholder="搜图: droplet impact contact angle" style="width:220px;font-size:10px;padding:2px 5px;background:var(--bg2);border:1px solid var(--line2);color:var(--text);border-radius:3px;" />
+          <button class="mini" id="gal-search">搜索</button>
+          <button class="mini" id="gal-clear">清空</button>
+        </span>
+      </div>
+      <div class="panel-body" id="gallery-body" style="overflow-y:auto;padding:6px;">
+        <div class="muted small" id="gallery-empty" style="text-align:center;padding:20px;">让 agent 调用 image_search / fetch_url，找到的图片会自动汇集到这里。也可在上方输入关键词直接搜图。双击大图查看原图，🔽 下载到 downloads/。</div>
+        <div id="gallery-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:6px;"></div>
+      </div>
+    </div>
+
+    <!-- 大图 lightbox -->
+    <div id="img-lightbox" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.92);align-items:center;justify-content:center;flex-direction:column;">
+      <img id="img-lightbox-img" style="max-width:90vw;max-height:80vh;object-fit:contain;border:1px solid #555;" />
+      <div id="img-lightbox-bar" style="margin-top:14px;display:flex;gap:10px;align-items:center;color:#ddd;font-size:12px;">
+        <a id="img-lightbox-open" target="_blank" style="color:#f0abfc;">在新标签打开</a>
+        <button class="mini" id="img-lightbox-dl">下载到 downloads/</button>
+        <button class="mini" id="img-lightbox-close">关闭</button>
+      </div>
+      <div id="img-lightbox-meta" class="small muted" style="margin-top:6px;max-width:90vw;text-align:center;word-break:break-all;"></div>
+    </div>
+
+    <!-- OpenFOAM Beta：教程/源码/算例向导 -->
+    <div class="panel" data-pid="foam" data-default="left:256;top:660;width:760;height:220" style="display:none;">
+      <div class="panel-head">
+        <span class="grip">⋮⋮</span>
+        <span class="ptitle">OpenFOAM <span class="small muted">Beta</span> <span id="foam-state" class="small muted">未启用</span></span>
+        <span class="pacts">
+          <button class="mini" id="foam-toggle" title="启用/关闭 Beta 模式">启用</button>
+          <button class="mini" id="foam-config" title="设置 OpenFOAM 根目录">⚙</button>
+        </span>
+      </div>
+      <div class="panel-body" style="padding:6px;display:flex;flex-direction:column;gap:6px;overflow:auto;">
+        <div id="foam-root-row" class="small muted" style="word-break:break-all;">FOAM_ROOT: <span id="foam-root-text">(未设置)</span></div>
+
+        <!-- 工作流引导大按钮：让智能体严格按流水式开局 -->
+        <div style="display:flex;gap:4px;">
+          <button class="mini" id="foam-flow-have" style="flex:1;padding:5px;" title="告诉智能体我已经有具体算例">我有具体算例</button>
+          <button class="mini" id="foam-flow-need" style="flex:1;padding:5px;" title="让智能体列本地教程候选">没有，列教程候选</button>
+          <button class="mini" id="foam-flow-paper" style="flex:1;padding:5px;background:rgba(232,121,249,.12);border-color:#a855f7;color:#f0abfc;" title="读论文 PDF → 在 OpenFOAM 中植入该算法">📄 论文植入</button>
+        </div>
+        <div style="display:flex;gap:4px;">
+          <button class="mini" id="foam-flow-stl" style="flex:1;padding:5px;background:rgba(34,211,238,.12);border-color:#0e7490;color:#67e8f9;" title="给 STL → 自动生成 blockMesh + snappyHexMesh + 求解 case">🧊 STL 建网格</button>
+          <button class="mini" id="foam-flow-compare" style="flex:1;padding:5px;background:rgba(167,139,250,.12);border-color:#7c3aed;color:#c4b5fd;" title="并排渲染两个 case 同一场同一时刻">🆚 对比渲染</button>
+          <button class="mini" id="foam-flow-residual" style="flex:1;padding:5px;background:rgba(163,230,53,.12);border-color:#65a30d;color:#bef264;" title="把当前选定 runId 的残差时序结构化提交给智能体分析">📈 残差分析</button>
+        </div>
+
+        <div style="display:flex;gap:4px;align-items:center;">
+          <select id="foam-kind" style="font-size:10px;background:var(--bg2);border:1px solid var(--line2);color:var(--text);border-radius:3px;padding:2px 4px;">
+            <option value="tutorial">教程 (tutorials/)</option>
+            <option value="solver">求解器 (applications/solvers)</option>
+            <option value="model">模型 (src/, drag/turbulence/etc)</option>
+            <option value="bc">边界条件 (fvPatchFields)</option>
+            <option value="all">全部源码</option>
+          </select>
+          <input id="foam-q" type="text" placeholder="如: bubbleColumn / WenYu / dragModel" style="flex:1;font-size:10px;padding:2px 5px;background:var(--bg2);border:1px solid var(--line2);color:var(--text);border-radius:3px;" />
+          <button class="mini" id="foam-search">搜索</button>
+        </div>
+        <div id="foam-results" style="flex:1;overflow:auto;font-size:10px;line-height:1.4;background:#0a0612;border:1px solid var(--line2);border-radius:4px;padding:6px;min-height:120px;">
+          <div class="muted small" style="text-align:center;padding:14px;">先填 OpenFOAM 根目录（⚙），然后输入关键词搜教程或源码。<br/>例：bubbleColumn、twoPhaseEuler、WenYu、SchillerNaumann、kEpsilon、fixedValue。</div>
+        </div>
+        <div class="small muted">点 <b>克隆</b> 把教程整套复制到工作区；点 <b>问 agent</b> 让智能体按流水式工作流接手。</div>
+      </div>
+    </div>
+
+    <!-- 求解器监测面板 -->
+    <div class="panel" data-pid="solver-monitor" data-default="left:1024;top:380;width:380;height:228" style="display:none;">
+      <div class="panel-head">
+        <span class="grip">⋮⋮</span>
+        <span class="ptitle">求解器监测</span>
+        <span class="pacts"><span id="sm-status" class="small muted">空闲</span></span>
+      </div>
+      <div class="panel-body" style="padding:6px;display:flex;flex-direction:column;gap:5px;overflow:auto;font-size:11px;">
+        <div style="display:flex;gap:4px;align-items:center;">
+          <select id="sm-run" style="flex:1;font-size:10px;background:var(--bg2);border:1px solid var(--line2);color:var(--text);border-radius:3px;padding:2px 4px;"><option value="">-- 选择 runId --</option></select>
+          <button class="mini" id="sm-refresh-runs" title="刷新作业列表">↻</button>
+          <button class="mini" id="sm-stop" title="终止当前作业">停止</button>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <span class="small muted">间隔</span>
+          <input id="sm-interval" type="range" min="2" max="30" value="5" style="flex:1;" />
+          <span id="sm-interval-text" class="small">5s</span>
+          <label class="small muted"><input type="checkbox" id="sm-auto" checked /> 自动刷新</label>
+        </div>
+        <div id="sm-summary" class="small muted">未选择作业。</div>
+        <canvas id="sm-resid-canvas" width="360" height="120" style="width:100%;height:120px;background:#0a0612;border:1px solid var(--line2);border-radius:4px;display:none;"></canvas>
+        <div id="sm-resid-legend" class="small" style="display:none;flex-wrap:wrap;gap:6px;font-size:10px;"></div>
+        <div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;">
+          <button class="mini" id="sm-snap-now" title="立刻给当前 case 拍一帧加入快照轴">📸 快照</button>
+          <label class="small muted" style="display:flex;align-items:center;gap:3px;"><input type="checkbox" id="sm-snap-auto" /> 每 <input id="sm-snap-every" type="number" min="5" max="600" value="30" style="width:42px;font-size:10px;background:var(--bg2);border:1px solid var(--line2);color:var(--text);border-radius:3px;padding:1px 3px;" />s 自动</label>
+          <input id="sm-snap-field" type="text" placeholder="场=U" value="U" style="width:60px;font-size:10px;background:var(--bg2);border:1px solid var(--line2);color:var(--text);border-radius:3px;padding:1px 4px;" />
+          <button class="mini" id="sm-snap-clear" title="清空快照轴">清空</button>
+        </div>
+        <div id="sm-snap-strip" style="display:flex;gap:4px;overflow-x:auto;min-height:54px;padding:2px;background:#08040f;border:1px solid var(--line2);border-radius:4px;"><div class="muted small" style="padding:8px;">📸 快照演化轴：跑求解器时点 📸 抓帧或勾选自动；点缩略图放大对比。</div></div>
+        <div id="sm-tail" style="flex:1;overflow:auto;background:#0a0612;border:1px solid var(--line2);border-radius:4px;padding:5px;font-family:monospace;font-size:10px;line-height:1.35;white-space:pre-wrap;min-height:60px;">(等待数据)</div>
+      </div>
+    </div>
+
+    <!-- foam 配置弹窗 -->
+    <div id="foam-cfg-modal" style="display:none;position:fixed;inset:0;z-index:9998;background:rgba(0,0,0,0.7);align-items:center;justify-content:center;">
+      <div style="background:var(--bg);border:1px solid var(--line2);border-radius:6px;padding:14px 16px;width:520px;max-width:90vw;">
+        <div style="font-size:13px;margin-bottom:8px;">设置 OpenFOAM 安装根目录</div>
+        <div class="small muted" style="margin-bottom:6px;">需要包含 <code>tutorials/</code>、<code>src/</code>、<code>applications/</code>。<br/>Linux 例：<code>/usr/lib/openfoam/openfoam2312</code>；Windows 例：<code>C:\OpenFOAM-12</code> 或 WSL 路径。</div>
+        <input id="foam-cfg-root" type="text" placeholder="OpenFOAM 安装根目录" style="width:100%;font-size:11px;padding:5px 7px;background:var(--bg2);border:1px solid var(--line2);color:var(--text);border-radius:3px;margin-bottom:6px;" />
+        <div id="foam-cfg-status" class="small muted" style="min-height:18px;"></div>
+        <div style="text-align:right;margin-top:8px;display:flex;gap:6px;justify-content:flex-end;">
+          <button class="mini" id="foam-cfg-cancel">取消</button>
+          <button class="mini" id="foam-cfg-save">保存并启用</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 终端（交互式） -->
+    <div class="panel" data-pid="terminal" data-default="left:256;top:452;width:760;height:200">
+      <div class="panel-head">
+        <span class="grip">⋮⋮</span>
+        <span class="ptitle">终端 <span id="shell-name" class="small muted"></span></span>
+        <span class="pacts"><button class="mini" id="clear-term">清空</button><button class="mini" id="kill-shell" title="重启 shell">↻</button></span>
+      </div>
+      <div class="term-wrap panel-body">
+        <div id="terminal" class="terminal"></div>
+        <div class="term-input-row">
+          <span id="term-prompt">$</span>
+          <input type="text" id="term-input" placeholder="输入命令并回车（cmd / bash）" autocomplete="off" />
+        </div>
+      </div>
+    </div>
+
+    <!-- 对话 -->
+    <div class="panel" data-pid="chat" data-default="left:1024;top:8;width:380;height:596">
+      <div class="panel-head"><span class="grip">⋮⋮</span><span class="ptitle">对话</span></div>
+      <div class="chat-body panel-body">
+        <div class="pending-bar" id="pending-bar" style="display:none;">
+          <div class="pending-head"><span>⚠ <b id="pending-count">0</b> 条待审</span>
+            <span><button class="mini ok" id="keep-all">全部 Keep</button><button class="mini no" id="undo-all">全部 Undo</button></span>
+          </div>
+          <div id="pending-list"></div>
+        </div>
+        <div id="chat" class="chat"></div>
+        <div class="input-wrap">
+          <div id="active-file-chip" class="active-file-chip" style="display:none;">
+            <label><input type="checkbox" id="active-file-toggle" /> 把当前文件作为输入：<span id="active-file-name"></span></label>
+          </div>
+          <div id="attachments" class="attachments"></div>
+          <div class="input-row">
+            <textarea id="input" placeholder="向 codeMax 发出指令… @文件 引用，Ctrl+Enter 发送"></textarea>
+            <div id="mention-pop" class="mention-pop" style="display:none;"></div>
+          </div>
+          <div class="input-toolbar">
+          <button class="mini" id="attach-file" title="附件">附件</button>
+          <button class="mini" id="attach-image" title="图片">图片</button>
+            <input type="file" id="file-picker" multiple style="display:none;" />
+            <input type="file" id="image-picker" accept="image/*" multiple style="display:none;" />
+            <span class="grow"></span>
+            <button id="stop" class="danger" disabled>⏹</button>
+            <button id="send" class="primary">发送 ⏎</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Python 环境选择 -->
+  <div id="py-modal" class="modal" style="display:none;">
+    <div class="modal-box small">
+          <div class="modal-head"><span>选择 Python 解释器</span><button class="mini" id="py-close">×</button></div>
+      <div class="py-body">
+        <div class="py-toolbar">
+            <button class="mini" id="py-refresh">重新扫描</button>
+            <button class="mini" id="py-browse">手动选择 python…</button>
+          <button class="mini no" id="py-clear">清除</button>
+        </div>
+        <div id="py-list" class="py-list"><div class="muted small" style="padding:20px;text-align:center;">扫描中…</div></div>
+      </div>
+      <div class="modal-actions"><button class="no" id="py-cancel">关闭</button></div>
+    </div>
+  </div>
+
+  <!-- 模型选择 / GitHub Copilot 登录 -->
+  <div id="model-modal" class="modal" style="display:none;">
+    <div class="modal-box">
+          <div class="modal-head"><span>选择 LLM 模型</span><button class="mini" id="model-close">×</button></div>
+      <div class="py-body">
+        <div class="model-tabs">
+          <button class="mtab active" data-prov="sf">SiliconFlow / 自定义</button>
+          <button class="mtab" data-prov="copilot">GitHub Copilot</button>
+        </div>
+
+        <div class="mpane" data-prov="sf" style="display:block;">
+          <div class="muted small" style="margin-bottom:6px;">使用 ⚙ 设置中的 baseUrl + apiKey + 模型名（OpenAI 兼容协议）</div>
+          <div style="display:flex;gap:6px;align-items:center;">
+            <span class="small">当前模型：</span>
+            <input id="sf-model" class="py-input" placeholder="deepseek-ai/DeepSeek-V3" style="flex:1;" />
+            <button class="mini ok" id="sf-apply">使用此模型</button>
+          </div>
+        </div>
+
+        <div class="mpane" data-prov="copilot" style="display:none;">
+          <div id="cp-loggedout" class="cp-section" style="display:none;">
+            <div class="muted small" style="margin-bottom:8px;">需要付费的 GitHub Copilot 订阅。点下面按钮启动设备授权流程，用浏览器打开 GitHub 登录页并粘贴一次性 user code 即可。</div>
+                <button class="mini ok" id="cp-login">使用 GitHub 账号登录 Copilot</button>
+            <div id="cp-device" style="display:none;margin-top:10px;padding:10px;background:#0a0612;border:1px solid #7c3aed;border-radius:5px;">
+              <div class="small">1. 打开：<a id="cp-uri" href="#" target="_blank" style="color:#f0abfc"></a></div>
+              <div class="small" style="margin-top:6px;">2. 输入设备码：<code id="cp-code" style="background:#1a0f2e;padding:2px 8px;border-radius:3px;color:#fff;letter-spacing:2px;font-size:14px;"></code> <button class="mini" id="cp-copy">复制</button></div>
+              <div id="cp-poll-status" class="muted small" style="margin-top:8px;">等待你在浏览器完成授权…</div>
+              <div style="margin-top:8px;display:flex;gap:6px;">
+                <button class="mini ok" id="cp-recheck">我已授权，立即检查</button>
+                <button class="mini no" id="cp-cancel">取消</button>
+              </div>
+            </div>
+          </div>
+          <div id="cp-loggedin" class="cp-section" style="display:none;">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+              <span class="small">✅ 已登录</span>
+                <button class="mini" id="cp-refresh">刷新模型</button>
+              <button class="mini no" id="cp-logout">退出登录</button>
+            </div>
+            <div class="muted small" style="margin-bottom:6px;">选择一个模型作为 agent 的大脑：</div>
+            <div id="cp-models" class="py-list" style="max-height:340px;overflow-y:auto;"></div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-actions"><button class="no" id="model-cancel">关闭</button></div>
+    </div>
+  </div>
+
+  <!-- 工具开关 -->
+  <div id="tools-modal" class="modal" style="display:none;">
+    <div class="modal-box small">
+          <div class="modal-head"><span>选择智能体可用工具</span><button class="mini" id="tools-close">×</button></div>
+      <div class="py-body">
+        <div class="muted small" style="margin-bottom:10px;">勾选后立刻生效，发给模型的工具列表会随之变化。<b>编辑/读写类</b>始终开启。</div>
+        <div id="tools-list"></div>
+      </div>
+      <div class="modal-actions"><button class="no" id="tools-cancel">关闭</button></div>
+    </div>
+  </div>
+
+  <!-- Diff 弹窗 -->
+  <div id="diff-modal" class="modal" style="display:none;">
+    <div class="modal-box">
+      <div class="modal-head"><span id="diff-title">差异预览</span><button class="mini" id="diff-close">×</button></div>
+      <div id="diff-editor" class="diff-editor"></div>
+      <div class="modal-actions"><button class="ok" id="diff-keep">✓ Keep</button><button class="no" id="diff-undo">↶ Undo</button></div>
+    </div>
+  </div>
+
+  <!-- 文件夹选择 -->
+  <div id="picker-modal" class="modal" style="display:none;">
+    <div class="modal-box small">
+      <div class="modal-head"><span id="picker-title">选择文件夹</span><button class="mini" id="picker-close">×</button></div>
+      <div class="picker-path">
+        <button class="mini" id="picker-up">⬆</button>
+        <input type="text" id="picker-cwd" />
+        <button class="mini" id="picker-go">→</button>
+      </div>
+      <div id="picker-list" class="picker-list"></div>
+      <div class="modal-actions">
+        <button class="ok" id="picker-pick">✓ 选择此处</button>
+        <button class="no" id="picker-cancel">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 设置 -->
+  <div id="settings-modal" class="modal" style="display:none;">
+    <div class="modal-box small">
+      <div class="modal-head"><span>⚙ 设置</span><button class="mini" id="settings-close">×</button></div>
+      <div class="settings-body">
+        <div class="setting-section">
+          <div class="setting-section-title">LLM</div>
+          <label>API Key<input type="password" id="set-apikey" placeholder="sk-..." /></label>
+          <label>Base URL<input type="text" id="set-baseurl" placeholder="https://api.deepseek.com" /></label>
+          <label>模型<input type="text" id="set-model" list="model-list" />
+            <datalist id="model-list">
+              <option value="deepseek-chat" /><option value="deepseek-coder" />
+              <option value="deepseek-ai/DeepSeek-V3" /><option value="deepseek-ai/DeepSeek-V4-Flash" />
+              <option value="Qwen/Qwen2.5-Coder-32B-Instruct" /><option value="Qwen/Qwen2-VL-72B-Instruct" />
+            </datalist>
+          </label>
+        </div>
+        <div class="setting-section">
+          <div class="setting-section-title">仿真</div>
+          <label>ParaView 主程序（paraview.exe / paraview）<input type="text" id="set-paraview-exe" placeholder="C:\Program Files\ParaView 5.12.0\bin\paraview.exe" /></label>
+          <label>pvpython（可选）<input type="text" id="set-paraview-py" /></label>
+          <label>OpenFOAM 环境脚本（可选）<input type="text" id="set-openfoam" placeholder="C:\Program Files\blueCFD-Core-2020\setvars.bat" /></label>
+        </div>
+      </div>
+      <div class="modal-actions">
+          <button class="ok" id="settings-save">保存</button>
+        <button class="no" id="settings-cancel">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

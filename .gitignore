@@ -1,0 +1,9 @@
+# Files (history rewrites are forbidden)
+*.log
+*.swp
+.DS_Store
+Thumbs.db
+
+# Local runtime state
+node_modules/
+.nullflux/
