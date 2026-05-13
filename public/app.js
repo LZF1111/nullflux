@@ -22,8 +22,8 @@ function applyPanelLayout(panel) {
 
 function makePanelMovableResizable(panel) {
   applyPanelLayout(panel);
-  // 添加缩放手柄
-  ['e', 's', 'se'].forEach(d => { const r = document.createElement('div'); r.className = 'resize-' + d; panel.appendChild(r); attachResize(panel, r, d); });
+  // V4: 8 个方向都可拉大小（n/e/s/w + 4 个角）
+  ['n','e','s','w','ne','nw','se','sw'].forEach(d => { const r = document.createElement('div'); r.className = 'resize-' + d; panel.appendChild(r); attachResize(panel, r, d); });
   const head = panel.querySelector('.panel-head');
   let dragStart = null;
   head.addEventListener('mousedown', (e) => {
@@ -54,13 +54,25 @@ function attachResize(panel, handle, dir) {
   let s = null;
   handle.addEventListener('mousedown', (e) => {
     bringFront(panel);
-    s = { mx: e.clientX, my: e.clientY, w: panel.offsetWidth, h: panel.offsetHeight };
+    s = { mx: e.clientX, my: e.clientY, w: panel.offsetWidth, h: panel.offsetHeight, left: panel.offsetLeft, top: panel.offsetTop };
     e.preventDefault(); e.stopPropagation();
   });
   document.addEventListener('mousemove', (e) => {
     if (!s) return;
-    if (dir === 'e' || dir === 'se') panel.style.width = Math.max(200, s.w + (e.clientX - s.mx)) + 'px';
-    if (dir === 's' || dir === 'se') panel.style.height = Math.max(100, s.h + (e.clientY - s.my)) + 'px';
+    const dx = e.clientX - s.mx;
+    const dy = e.clientY - s.my;
+    if (dir.includes('e')) panel.style.width = Math.max(200, s.w + dx) + 'px';
+    if (dir.includes('s')) panel.style.height = Math.max(100, s.h + dy) + 'px';
+    if (dir.includes('w')) {
+      const newW = Math.max(200, s.w - dx);
+      panel.style.width = newW + 'px';
+      panel.style.left = (s.left + (s.w - newW)) + 'px';
+    }
+    if (dir.includes('n')) {
+      const newH = Math.max(100, s.h - dy);
+      panel.style.height = newH + 'px';
+      panel.style.top = (s.top + (s.h - newH)) + 'px';
+    }
     if (panel.dataset.pid === 'editor' && editor) editor.layout();
   });
   document.addEventListener('mouseup', () => { if (!s) return; s = null; persistPanel(panel); if (editor) editor.layout(); });
@@ -94,7 +106,11 @@ const PANEL_META = {
   chat:           { label: '聊天 / 智能体', group: '工作区' },
   paraview:       { label: 'ParaView 预览', group: '仿真',   defaultHidden: true },
   foam:           { label: 'OpenFOAM (Beta)', group: '仿真', defaultHidden: true },
+  mfix:           { label: 'MFIX (Beta)',  group: '仿真',   defaultHidden: true },
+  lbm:            { label: 'LBM (Beta)',   group: '仿真',   defaultHidden: true },
+  custom:         { label: '自定义工作流 (Beta)', group: '仿真', defaultHidden: false },
   'solver-monitor':{label: '求解器监测',  group: '仿真',   defaultHidden: true },
+  scholar:        { label: '🎓 Agent 观察员',  group: '智能体', defaultHidden: false },
   gallery:        { label: '图片库',      group: '其他',   defaultHidden: true },
 };
 function loadPanelVis() { try { return JSON.parse(localStorage.getItem(PANELS_KEY) || '{}'); } catch { return {}; } }
@@ -455,8 +471,7 @@ function connect() {
   ws.onmessage = (e) => { noteServerActivity(); handleMessage(JSON.parse(e.data)); };
   ws.onclose = () => { addSystem('连接断开，重连中...'); setTimeout(connect, 1000); };
   ws.onopen = () => { addTerm('[已连接 NullFlux]', 'sys');
-    ws.send(JSON.stringify({ type: 'set_auto', value: $('auto-mode').checked }));
-    ws.send(JSON.stringify({ type: 'set_sim', value: $('sim-mode').checked })); };
+    ws.send(JSON.stringify({ type: 'set_auto', value: $('auto-mode').checked })); };
 }
 connect();
 
@@ -534,16 +549,8 @@ $('send').onclick = send;
 $('input').addEventListener('keydown', onInputKey);
 $('input').addEventListener('input', onInputChange);
 $('auto-mode').onchange = () => ws.send(JSON.stringify({ type: 'set_auto', value: $('auto-mode').checked }));
-$('sim-mode').onchange = () => { ws.send(JSON.stringify({ type: 'set_sim', value: $('sim-mode').checked })); applySimMode(); };
 $('clear-term').onclick = () => { $('terminal').innerHTML = ''; };
 $('kill-shell').onclick = () => { ws.send(JSON.stringify({ type: 'pty_kill' })); addTerm('[shell 已重启]', 'sys'); };
-
-function applySimMode() {
-  const on = $('sim-mode').checked;
-  // 仅开启仿真时自动打开 ParaView 面板；是否隐藏编辑器交给用户（菜单里手动切）
-  if (on) setPanelVisible('paraview', true);
-  else    setPanelVisible('paraview', false);
-}
 
 // ====================== 发送 ======================
 function send() {
@@ -572,11 +579,56 @@ function send() {
 }
 function setRunning(r) {
   $('send').disabled = r; $('stop').disabled = !r;
-  if (r) armStuckWatchdog(); else clearStuckWatchdog();
+  if (r) { armStuckWatchdog(); showPhase('llm_thinking', '启动中…'); _phaseStart = Date.now(); startPhaseTick(); }
+  else { clearStuckWatchdog(); stopPhaseTick(); hidePhase(); }
 }
 
+// ============== Agent 状态带（V3.1 可见反馈） ==============
+let _phaseState = { phase: 'idle', detail: '', tool: '', startedAt: 0, lastEventAt: 0 };
+let _phaseStart = 0;
+let _phaseTick = 0;
+function ensurePhaseBar() {
+  let bar = document.getElementById('agent-phase-bar');
+  if (bar) return bar;
+  bar = document.createElement('div');
+  bar.id = 'agent-phase-bar';
+  bar.className = 'agent-phase-bar';
+  bar.innerHTML = `<span class="ph-spin"></span><span class="ph-icon" id="ph-icon">🤔</span><span class="ph-text" id="ph-text">启动中…</span><span class="ph-elapsed" id="ph-elapsed"></span>`;
+  document.body.appendChild(bar);
+  return bar;
+}
+function showPhase(phase, detail, tool) {
+  const bar = ensurePhaseBar();
+  bar.style.display = 'flex';
+  _phaseState.phase = phase; _phaseState.detail = detail || ''; _phaseState.tool = tool || '';
+  _phaseState.lastEventAt = Date.now();
+  const ico = { llm_thinking: '🤔', streaming: '✍️', tool_exec: '⚙️', tool_done: '✅', awaiting_user: '✋' }[phase] || '⏳';
+  document.getElementById('ph-icon').textContent = ico;
+  document.getElementById('ph-text').textContent = detail || phase;
+  bar.classList.toggle('streaming', phase === 'streaming');
+  bar.classList.toggle('tool', phase === 'tool_exec');
+  bar.classList.toggle('thinking', phase === 'llm_thinking');
+}
+function hidePhase() {
+  const bar = document.getElementById('agent-phase-bar');
+  if (bar) bar.style.display = 'none';
+}
+function startPhaseTick() {
+  stopPhaseTick();
+  _phaseTick = setInterval(() => {
+    const el = document.getElementById('ph-elapsed'); if (!el) return;
+    const totalSec = Math.floor((Date.now() - _phaseStart) / 1000);
+    const sinceEvent = Math.floor((Date.now() - _phaseState.lastEventAt) / 1000);
+    let warn = '';
+    if (_phaseState.phase === 'llm_thinking' && sinceEvent > 20) warn = ' ⚠ LLM 响应偏慢';
+    else if (_phaseState.phase === 'tool_exec' && sinceEvent > 30) warn = ' ⚠ 工具耗时较长';
+    el.textContent = `· ${totalSec}s${warn}`;
+  }, 500);
+}
+function stopPhaseTick() { if (_phaseTick) { clearInterval(_phaseTick); _phaseTick = 0; } }
+
 // ============== 卡死自愈：超过 STUCK_MS 没收到任何服务端消息时给"恢复"按钮 ==============
-const STUCK_MS = 150_000; // 2.5 分钟没动静就提示
+const STUCK_MS = 60_000; // V3.1: 1 分钟无响应就提示（以前 2.5 min 太长）
 let _stuckTimer = 0;
 let _lastServerMsgAt = Date.now();
 function noteServerActivity() { _lastServerMsgAt = Date.now(); if ($('send').disabled) armStuckWatchdog(); }
@@ -736,13 +788,21 @@ $('settings-btn').onclick = async () => {
   $('set-apikey').value = j.apiKey || ''; $('set-baseurl').value = j.baseUrl || '';
   $('set-model').value = j.model || ''; $('set-paraview-exe').value = j.paraviewExe || '';
   $('set-paraview-py').value = j.paraviewPython || ''; $('set-openfoam').value = j.openfoamBash || '';
+  // V4.1 视觉路由
+  if ($('set-vision-baseurl')) $('set-vision-baseurl').value = j.visionBaseUrl || 'https://api.siliconflow.cn';
+  if ($('set-vision-model'))   $('set-vision-model').value   = j.visionModel   || 'Pro/moonshotai/Kimi-K2.6';
+  if ($('set-vision-apikey'))  $('set-vision-apikey').value  = j.visionApiKey  || '';
   $('settings-modal').style.display = '';
 };
 $('settings-close').onclick = $('settings-cancel').onclick = () => $('settings-modal').style.display = 'none';
 $('settings-save').onclick = async () => {
   const body = { apiKey: $('set-apikey').value, baseUrl: $('set-baseurl').value, model: $('set-model').value,
-    paraviewExe: $('set-paraview-exe').value, paraviewPython: $('set-paraview-py').value, openfoamBash: $('set-openfoam').value };
+    paraviewExe: $('set-paraview-exe').value, paraviewPython: $('set-paraview-py').value, openfoamBash: $('set-openfoam').value,
+    visionBaseUrl: $('set-vision-baseurl') ? $('set-vision-baseurl').value : undefined,
+    visionModel:   $('set-vision-model')   ? $('set-vision-model').value   : undefined,
+    visionApiKey:  $('set-vision-apikey')  ? $('set-vision-apikey').value  : undefined };
   if (body.apiKey.startsWith('***')) delete body.apiKey;
+  if (body.visionApiKey && body.visionApiKey.startsWith('***')) delete body.visionApiKey;
   const j = await (await fetch('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)})).json();
   if (j.ok) { addSystem('设置已保存'); $('settings-modal').style.display = 'none'; }
 };
@@ -834,6 +894,29 @@ function handleMessage(m) {
     case 'heartbeat': /* 仅作活跃信号 */ break;
     case 'images': addToGallery(m.images, m.query); break;
     case 'foam_state': updateFoamState(m.enabled, m.root); break;
+    case 'mfix_state': updateMfixState(m.enabled, m.root, m.bash); break;
+    case 'lbm_state':  updateLbmState(m.enabled, m.tutorialRoot, m.runCmd); break;
+    case 'custom_state': updateCustomState(m.enabled, m.name, m.root, m.prompt); break;
+    case 'agent_phase': {
+      _phaseStart = _phaseStart || Date.now();
+      showPhase(m.phase, m.detail, m.tool);
+      try { window.NFScholar && window.NFScholar.onPhase && window.NFScholar.onPhase(m.phase, m.detail || '', m.tool || ''); } catch {}
+      break;
+    }
+    case 'digitize_open': {
+      // 后端请求用户打开标注界面（可能携带图片 base64 / hint / request_id）
+      if (window.NFDigitizer) {
+        window.NFDigitizer.open({
+          imageBase64: m.image_base64 || null,
+          imageUrl: m.image_url || null,
+          hint: m.hint || '',
+          name: m.name || 'plot',
+          requestId: m.request_id || null
+        });
+        try { addSystem('📍 Agent 请你亲手标注一张图表的数据点。完成后请点「保存 CSV 并发送到聊天」。' + (m.hint ? ' 提示：' + m.hint : '')); } catch {}
+      }
+      break;
+    }
     case 'error': addSystem('错误：' + m.message); addTerm('[错误] ' + m.message, 'err'); setRunning(false); break;
     case 'reset_done': {
       const chat = $('chat'); if (chat) chat.innerHTML = '';
@@ -978,7 +1061,16 @@ function renderNode(node, isRoot, depth) {
     el.dataset.path = node.path;
     el.style.paddingLeft = (8 + depth * 12) + 'px';
     if (node.type === 'file') {
-      el.textContent = '📄 ' + node.name;
+      // 按扩展名给小图标，方便一眼定位 PDF/图片/STL 等
+      const lower = (node.name || '').toLowerCase();
+      let icon = '📄';
+      if (/\.pdf$/.test(lower)) icon = '📕';
+      else if (/\.(png|jpe?g|gif|webp|bmp|svg|ico)$/.test(lower)) icon = '🖼';
+      else if (/\.stl$/.test(lower)) icon = '🧊';
+      else if (/\.ipynb$/.test(lower)) icon = '📓';
+      else if (/\.(md|markdown)$/.test(lower)) icon = '📝';
+      else if (/\.(py|js|ts|jsx|tsx|cpp|c|h|hpp|f90|f|cu|rs|go|java|sh)$/.test(lower)) icon = '⚙';
+      el.textContent = icon + ' ' + node.name;
       el.onclick = () => openFile(node.path);
     }
     if (node.type === 'dir') {
@@ -1267,6 +1359,30 @@ $('gal-clear').onclick = () => { GALLERY.length = 0; renderGallery(); };
 
 // ====================== OpenFOAM Beta 面板 ======================
 const FOAM_STATE = { enabled: false, root: '' };
+
+// —— 顶栏模式徽章 —— 任意 Beta 模式开启/关闭时同步渲染
+function renderModePills() {
+  const host = $('mode-pills'); if (!host) return;
+  const pills = [];
+  if (typeof FOAM_STATE !== 'undefined' && FOAM_STATE.enabled)     pills.push({ cls: 'foam',   label: 'OpenFOAM', pid: 'foam' });
+  if (typeof MFIX_STATE !== 'undefined' && MFIX_STATE.enabled)     pills.push({ cls: 'mfix',   label: 'MFIX',     pid: 'mfix' });
+  if (typeof LBM_STATE  !== 'undefined' && LBM_STATE.enabled)      pills.push({ cls: 'lbm',    label: 'LBM',      pid: 'lbm' });
+  if (typeof CUSTOM_STATE !== 'undefined' && CUSTOM_STATE.enabled) pills.push({ cls: 'custom', label: CUSTOM_STATE.name || '自定义', pid: 'custom' });
+  if (!pills.length) { host.innerHTML = ''; return; }
+  host.innerHTML = pills.map(p =>
+    `<span class="pill ${p.cls}" data-pid="${p.pid}" title="点击聚焦面板"><span class="dot"></span>${p.label}</span>`
+  ).join('');
+  // 点击 pill → 显示并滚动到对应面板
+  host.querySelectorAll('.pill').forEach(el => {
+    el.onclick = () => {
+      const pid = el.getAttribute('data-pid');
+      if (typeof setPanelVisible === 'function') setPanelVisible(pid, true);
+      const panel = document.querySelector(`.panel[data-pid="${pid}"]`);
+      if (panel) { panel.style.zIndex = 999; panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); setTimeout(() => panel.style.zIndex = '', 1200); }
+    };
+  });
+}
+
 function updateFoamState(enabled, root) {
   const wasEnabled = FOAM_STATE.enabled;
   FOAM_STATE.enabled = !!enabled; FOAM_STATE.root = root || '';
@@ -1275,11 +1391,13 @@ function updateFoamState(enabled, root) {
   $('foam-toggle').textContent = FOAM_STATE.enabled ? '关闭' : '启用';
   $('foam-root-text').textContent = FOAM_STATE.root || '(未设置 — 点 ⚙ 配置)';
   $('foam-cfg-root').value = FOAM_STATE.root || '';
-  // 启用时自动打开 OpenFOAM 与求解器监测面板
+  // 启用时自动打开 OpenFOAM、求解器监测、ParaView 面板
   if (FOAM_STATE.enabled && !wasEnabled) {
     setPanelVisible('foam', true);
     setPanelVisible('solver-monitor', true);
+    setPanelVisible('paraview', true);
   }
+  renderModePills();
 }
 async function refreshFoamConfig() {
   try { const r = await fetch('/api/foam/config').then(r => r.json()); updateFoamState(r.foamMode, r.root); } catch {}
@@ -1734,6 +1852,18 @@ $('tools-btn').onclick = () => { renderToolsList(); $('tools-modal').style.displ
 $('tools-close').onclick = $('tools-cancel').onclick = () => $('tools-modal').style.display = 'none';
 // 初次连接后服务端会推 tools_state，由 onmessage 处理
 
+// ====================== Digitizer (V3) 手动标注按钮 ======================
+const _digBtn = document.getElementById('digitize-btn');
+if (_digBtn) {
+  _digBtn.onclick = () => {
+    if (!window.NFDigitizer) { alert('digitizer.js 未加载'); return; }
+    window.NFDigitizer.open({
+      name: 'plot',
+      hint: '从论文截图 / 本地 PNG 手动标注数据点'
+    });
+  };
+}
+
 // ====================== 模型选择 / GitHub Copilot ======================
 const MODEL_STATE = { provider: 'sf', sfModel: '', copilotModel: 'gpt-4.1', copilotLoggedIn: false, devicePoll: null };
 
@@ -2119,5 +2249,466 @@ window.addEventListener('dscm-msg', (ev) => {
   } else if (m.type === 'nb_msg') {
     handleNbMsg(m.path, m.msg);
   }
+});
+
+
+// ====================== MFIX Beta 面板 ======================
+const MFIX_STATE = { enabled: false, root: '', bash: '' };
+function updateMfixState(enabled, root, bash) {
+  const was = MFIX_STATE.enabled;
+  MFIX_STATE.enabled = !!enabled; MFIX_STATE.root = root || ''; MFIX_STATE.bash = bash || '';
+  const stEl = $('mfix-state'); if (stEl) { stEl.textContent = MFIX_STATE.enabled ? 'Beta 已启用' : '未启用'; stEl.style.color = MFIX_STATE.enabled ? '#a3e635' : ''; }
+  const tgEl = $('mfix-toggle'); if (tgEl) tgEl.textContent = MFIX_STATE.enabled ? '关闭' : '启用';
+  const txt = $('mfix-root-text'); if (txt) txt.textContent = MFIX_STATE.root || '(未设置 — 点 ⚙ 配置)';
+  const cfgRoot = $('mfix-cfg-root'); if (cfgRoot) cfgRoot.value = MFIX_STATE.root || '';
+  const cfgBash = $('mfix-cfg-bash'); if (cfgBash) cfgBash.value = MFIX_STATE.bash || '';
+  if (MFIX_STATE.enabled && !was) {
+    setPanelVisible('mfix', true);
+    setPanelVisible('solver-monitor', true);
+    setPanelVisible('paraview', true);
+  }
+  renderModePills();
+}
+async function refreshMfixConfig() {
+  try { const r = await fetch('/api/mfix/config').then(r => r.json()); updateMfixState(r.mfixMode, r.root, r.bash); } catch {}
+}
+refreshMfixConfig();
+
+$('mfix-toggle') && ($('mfix-toggle').onclick = () => {
+  if (!MFIX_STATE.enabled && !MFIX_STATE.root) { $('mfix-config').click(); return; }
+  ws.send(JSON.stringify({ type: 'set_mfix', value: !MFIX_STATE.enabled }));
+});
+$('mfix-config') && ($('mfix-config').onclick = () => { $('mfix-cfg-root').value = MFIX_STATE.root || ''; $('mfix-cfg-bash').value = MFIX_STATE.bash || ''; $('mfix-cfg-status').textContent = ''; $('mfix-cfg-modal').style.display = 'flex'; $('mfix-cfg-root').focus(); });
+$('mfix-cfg-cancel') && ($('mfix-cfg-cancel').onclick = () => $('mfix-cfg-modal').style.display = 'none');
+$('mfix-cfg-save') && ($('mfix-cfg-save').onclick = async () => {
+  const root = $('mfix-cfg-root').value.trim();
+  const bash = $('mfix-cfg-bash').value.trim();
+  $('mfix-cfg-status').textContent = '检查中…';
+  try {
+    await fetch('/api/mfix/config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ root, bash, mfixMode: true }) });
+    const r = await fetch('/api/mfix/config').then(r => r.json());
+    if (!r.exists) { $('mfix-cfg-status').textContent = '⚠ 路径不存在或无权限：' + r.root; $('mfix-cfg-status').style.color = '#fca5a5'; return; }
+    if (!r.hasTutorials) { $('mfix-cfg-status').textContent = '⚠ 路径下未发现 tutorials/ 子目录（仍会启用，但 mfix_find_tutorial 会报错）'; $('mfix-cfg-status').style.color = '#fbbf24'; }
+    else { $('mfix-cfg-status').textContent = '✓ tutorials/ 检测通过'; $('mfix-cfg-status').style.color = '#a3e635'; }
+    ws.send(JSON.stringify({ type: 'set_mfix', value: true }));
+    setTimeout(() => $('mfix-cfg-modal').style.display = 'none', 700);
+  } catch (e) { $('mfix-cfg-status').textContent = '失败：' + e.message; $('mfix-cfg-status').style.color = '#fca5a5'; }
+});
+
+$('mfix-search') && ($('mfix-search').onclick = async () => {
+  if (!MFIX_STATE.root) { addSystem('请先点 ⚙ 设置 MFIX 根目录'); return; }
+  const q = $('mfix-q').value.trim();
+  if (!q) { $('mfix-results').innerHTML = '<div class="muted small" style="padding:10px;">请输入关键词</div>'; return; }
+  $('mfix-search').disabled = true; $('mfix-search').textContent = '…';
+  try {
+    const r = await fetch(`/api/mfix/tutorials?q=${encodeURIComponent(q)}&top_k=30`);
+    const t = await r.text();
+    if (!r.ok) { $('mfix-results').innerHTML = `<div class="small" style="color:#fca5a5;padding:10px;">${t}</div>`; }
+    else $('mfix-results').textContent = t;
+  } catch (e) { $('mfix-results').textContent = '失败：' + e.message; }
+  finally { $('mfix-search').disabled = false; $('mfix-search').textContent = '搜索'; }
+});
+$('mfix-q') && $('mfix-q').addEventListener('keydown', e => { if (e.key === 'Enter') $('mfix-search').click(); });
+
+$('mfix-flow-have') && ($('mfix-flow-have').onclick = () => {
+  if (!MFIX_STATE.enabled) { addSystem('请先启用 MFIX Beta 模式'); return; }
+  const p = prompt('告诉智能体你已经有的 MFIX 算例的相对路径或绝对路径：', '');
+  if (!p) return;
+  $('input').value = `我已经有具体 MFIX 算例了，路径是 \`${p}\`。请严格按 MFIX 流水式工作流：\n1. 调 mfix_inspect_case("${p}") 一次性摘要并列文件；\n2. update_todos 列出 5–15 项可改项（DT/TIME/IMAX/BC_*/IC_*/物性/输出频率）；\n3. 在聊天里给我**带编号的推荐选项**，每项标注默认值；\n4. **一次只问我一项**，我答了就改 keyword（注意 MFIX 是 \`KEYWORD = value\` 大写格式）；\n5. 全确认后用 mfix_run_solver_async 后台跑，让我在监测面板看。`;
+  $('send').click();
+});
+$('mfix-flow-need') && ($('mfix-flow-need').onclick = () => {
+  if (!MFIX_STATE.enabled) { addSystem('请先启用 MFIX Beta 模式'); return; }
+  const kw = prompt('告诉智能体你的关键词（如 fluidBed / Geldart-B / DEM / TFM / 喷动床）：', '');
+  if (!kw) return;
+  $('input').value = `我没有具体 MFIX 算例，关键词：${kw}。请：\n1. 调 mfix_find_tutorial("${kw}", 12) 列 tutorials 候选；\n2. update_todos 写成清单；\n3. 在聊天里用 1) 2) 3) 编号列出，等我回编号；\n4. **不要替我做选择**。我选了之后 mfix_clone_tutorial → mfix_inspect_case → 流水式工作流。`;
+  $('send').click();
+});
+
+
+// ====================== LBM Beta 面板 ======================
+const LBM_STATE = { enabled: false, tutorialRoot: '', runCmd: '' };
+function updateLbmState(enabled, tutorialRoot, runCmd) {
+  const was = LBM_STATE.enabled;
+  LBM_STATE.enabled = !!enabled; LBM_STATE.tutorialRoot = tutorialRoot || ''; LBM_STATE.runCmd = runCmd || '';
+  const stEl = $('lbm-state'); if (stEl) { stEl.textContent = LBM_STATE.enabled ? 'Beta 已启用' : '未启用'; stEl.style.color = LBM_STATE.enabled ? '#a3e635' : ''; }
+  const tgEl = $('lbm-toggle'); if (tgEl) tgEl.textContent = LBM_STATE.enabled ? '关闭' : '启用';
+  const txt = $('lbm-root-text'); if (txt) txt.textContent = LBM_STATE.tutorialRoot || '(未设置 — 点 ⚙ 配置)';
+  const cfgRoot = $('lbm-cfg-root'); if (cfgRoot) cfgRoot.value = LBM_STATE.tutorialRoot || '';
+  const cfgRun  = $('lbm-cfg-runcmd'); if (cfgRun) cfgRun.value = LBM_STATE.runCmd || '';
+  if (LBM_STATE.enabled && !was) {
+    setPanelVisible('lbm', true);
+    setPanelVisible('solver-monitor', true);
+    setPanelVisible('paraview', true);
+  }
+  renderModePills();
+}
+async function refreshLbmConfig() {
+  try { const r = await fetch('/api/lbm/config').then(r => r.json()); updateLbmState(r.lbmMode, r.tutorialRoot, r.runCmd); } catch {}
+}
+refreshLbmConfig();
+
+$('lbm-toggle') && ($('lbm-toggle').onclick = () => {
+  if (!LBM_STATE.enabled && !LBM_STATE.tutorialRoot) { $('lbm-config').click(); return; }
+  ws.send(JSON.stringify({ type: 'set_lbm', value: !LBM_STATE.enabled }));
+});
+$('lbm-config') && ($('lbm-config').onclick = () => { $('lbm-cfg-root').value = LBM_STATE.tutorialRoot || ''; $('lbm-cfg-runcmd').value = LBM_STATE.runCmd || ''; $('lbm-cfg-status').textContent = ''; $('lbm-cfg-modal').style.display = 'flex'; $('lbm-cfg-root').focus(); });
+$('lbm-cfg-cancel') && ($('lbm-cfg-cancel').onclick = () => $('lbm-cfg-modal').style.display = 'none');
+$('lbm-cfg-save') && ($('lbm-cfg-save').onclick = async () => {
+  const tutorialRoot = $('lbm-cfg-root').value.trim();
+  const runCmd = $('lbm-cfg-runcmd').value.trim();
+  $('lbm-cfg-status').textContent = '检查中…';
+  try {
+    await fetch('/api/lbm/config', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ tutorialRoot, runCmd, lbmMode: true }) });
+    const r = await fetch('/api/lbm/config').then(r => r.json());
+    if (!r.exists) { $('lbm-cfg-status').textContent = '⚠ 路径不存在或无权限：' + r.tutorialRoot; $('lbm-cfg-status').style.color = '#fca5a5'; return; }
+    $('lbm-cfg-status').textContent = '✓ 路径检测通过'; $('lbm-cfg-status').style.color = '#a3e635';
+    ws.send(JSON.stringify({ type: 'set_lbm', value: true }));
+    setTimeout(() => $('lbm-cfg-modal').style.display = 'none', 700);
+  } catch (e) { $('lbm-cfg-status').textContent = '失败：' + e.message; $('lbm-cfg-status').style.color = '#fca5a5'; }
+});
+
+$('lbm-search') && ($('lbm-search').onclick = async () => {
+  if (!LBM_STATE.tutorialRoot) { addSystem('请先点 ⚙ 设置 LBM 算例根目录'); return; }
+  const q = $('lbm-q').value.trim();
+  if (!q) { $('lbm-results').innerHTML = '<div class="muted small" style="padding:10px;">请输入关键词</div>'; return; }
+  $('lbm-search').disabled = true; $('lbm-search').textContent = '…';
+  try {
+    const r = await fetch(`/api/lbm/tutorials?q=${encodeURIComponent(q)}&top_k=30`);
+    const t = await r.text();
+    if (!r.ok) { $('lbm-results').innerHTML = `<div class="small" style="color:#fca5a5;padding:10px;">${t}</div>`; }
+    else $('lbm-results').textContent = t;
+  } catch (e) { $('lbm-results').textContent = '失败：' + e.message; }
+  finally { $('lbm-search').disabled = false; $('lbm-search').textContent = '搜索'; }
+});
+$('lbm-q') && $('lbm-q').addEventListener('keydown', e => { if (e.key === 'Enter') $('lbm-search').click(); });
+
+$('lbm-flow-have') && ($('lbm-flow-have').onclick = () => {
+  if (!LBM_STATE.enabled) { addSystem('请先启用 LBM Beta 模式'); return; }
+  const p = prompt('告诉智能体你已经有的 LBM 算例路径：', '');
+  if (!p) return;
+  const algo = prompt('（可选）告诉智能体算法（如 D2Q9 BGK / D3Q19 MRT / Cumulant / Shan-Chen 多相）。直接回车跳过：', '') || '';
+  $('input').value = `我已经有 LBM 算例了，路径 \`${p}\`${algo ? '，算法：' + algo : ''}。请按 LBM 工作流：\n1. 调 lbm_inspect_case("${p}"${algo ? ', "' + algo + '"' : ''}) 摘要 + 自动识别算法骨架；\n2. update_todos 列出可改项（NX/NY/NZ、Re、tau、u_lb、总步数、输出频率、BC、IC）；\n3. 在聊天里给我**带编号的推荐选项**；\n4. **一次只问我一项**，我答完你 edit_file 改源码 / params；\n5. 全确认后 lbm_run_async 跑（C++ 算例先编译），让我在监测面板看。`;
+  $('send').click();
+});
+$('lbm-flow-need') && ($('lbm-flow-need').onclick = () => {
+  if (!LBM_STATE.enabled) { addSystem('请先启用 LBM Beta 模式'); return; }
+  const kw = prompt('告诉智能体你的关键词（如 D3Q19 / MRT / Shan-Chen / cavity / Poiseuille）：', '');
+  if (!kw) return;
+  $('input').value = `我没有具体 LBM 算例，关键词：${kw}。请：\n1. 调 lbm_find_tutorial("${kw}", 12) 列候选；\n2. update_todos 写成清单；\n3. 在聊天里用 1) 2) 3) 编号列出，等我回编号；\n4. **不要替我做选择**。我选了之后 lbm_clone_tutorial → lbm_inspect_case → 工作流。`;
+  $('send').click();
+});
+$('lbm-flow-algo') && ($('lbm-flow-algo').onclick = () => {
+  if (!LBM_STATE.enabled) { addSystem('请先启用 LBM Beta 模式'); return; }
+  const algo = prompt('告诉智能体你要用的算法（核心三件套：格子+碰撞+边界）：\n例：D3Q19 MRT + Zou-He 入口 + bounce-back 壁面\n   D2Q9 BGK + extrapolation 入口\n   D3Q19 Cumulant + half-way bounce-back', '');
+  if (!algo) return;
+  $('input').value = `我希望用以下 LBM 算法：${algo}。\n请：\n1. 先问我"你想从已有算例改写还是从零搭"；\n2. 如果是改写 → 调 lbm_find_tutorial 找最近的；\n3. 如果是从零 → 列出实现清单（equilibrium / collision / streaming 三大核心函数 + BC + IO），用 update_todos 跟踪；\n4. 然后按 LBM 工作流（一次问一项 + 立即应用）继续。`;
+  $('send').click();
+});
+
+// ====================== 自定义工作流 (Beta) ======================
+const CUSTOM_STATE = { enabled: false, name: '', root: '', prompt: '', _firstPush: true };
+function updateCustomState(enabled, name, root, promptText) {
+  const wasEnabled = CUSTOM_STATE.enabled;
+  const oldLen = (CUSTOM_STATE.prompt || '').length;
+  CUSTOM_STATE.enabled = !!enabled;
+  if (typeof name === 'string') CUSTOM_STATE.name = name;
+  if (typeof root === 'string') CUSTOM_STATE.root = root;
+  if (typeof promptText === 'string') CUSTOM_STATE.prompt = promptText;
+  const newLen = (CUSTOM_STATE.prompt || '').length;
+  const stEl = $('custom-state'); if (stEl) {
+    stEl.textContent = CUSTOM_STATE.enabled ? `已启用 · ${CUSTOM_STATE.name || '未命名'}` : '未启用';
+    stEl.style.color = CUSTOM_STATE.enabled ? '#c4b5fd' : '';
+  }
+  const tg = $('custom-toggle'); if (tg) tg.textContent = CUSTOM_STATE.enabled ? '关闭' : '启用';
+  const nt = $('custom-name-text'); if (nt) nt.textContent = CUSTOM_STATE.name || '(未命名)';
+  const rt = $('custom-root-text'); if (rt) rt.textContent = CUSTOM_STATE.root || '(可选/未设置)';
+  const pv = $('custom-preview'); if (pv) {
+    const t = (CUSTOM_STATE.prompt || '').trim();
+    pv.textContent = t ? (t.length > 600 ? t.slice(0, 600) + ' …(共 ' + t.length + ' 字符)' : t)
+                       : '(尚未配置 prompt 流水。点 ⚙ 写一段，或塞参考示例。)';
+  }
+  renderModePills();
+  // —— 显式反馈：仅在状态实际变化时往聊天区报告（初次连接时的状态推送不算）
+  if (!CUSTOM_STATE._firstPush) {
+    if (CUSTOM_STATE.enabled !== wasEnabled) {
+      if (CUSTOM_STATE.enabled) {
+        try { addSystem(`✅ 自定义工作流已启用：「${CUSTOM_STATE.name || '未命名'}」（${newLen} 字符已注入到 system prompt）。可点面板里"🧪 测试"按钮验证生效。`); } catch {}
+        // 启用时自动把面板调出来 + 弹到顶
+        try { setPanelVisible('custom', true); } catch {}
+        const panel = document.querySelector('.panel[data-pid="custom"]');
+        if (panel) { panel.style.zIndex = 999; setTimeout(() => panel.style.zIndex = '', 1500); }
+      } else {
+        try { addSystem(`⚪ 自定义工作流已关闭（system prompt 移除 ${oldLen} 字符）`); } catch {}
+      }
+    } else if (CUSTOM_STATE.enabled && newLen !== oldLen) {
+      try { addSystem(`✏ 自定义工作流已更新：「${CUSTOM_STATE.name || '未命名'}」（${oldLen} → ${newLen} 字符）`); } catch {}
+    }
+  }
+  CUSTOM_STATE._firstPush = false;
+}
+
+// 参考示例：Matplotlib 学术绘图工作流（一个流程化、画图规范的样板）
+const CUSTOM_EXAMPLE_PROMPT = `========== Matplotlib 学术出版图绘图工作流 ==========
+你是一个"学术绘图助手"。用户给你数据或脚本，你按下面流水线一步步走，**每一步都先确认再动手**，不要一口气把图画完。
+
+## 第 1 步：理解需求（必须）
+- 问用户三件事，一次问一项：
+  1) 这张图用在哪里？（论文正文 / 答辩 PPT / 期刊封面）
+  2) 数据来自哪里？（提供文件路径，或贴一段示例）
+  3) 想要什么图型？（line / scatter / bar / heatmap / contour / errorbar / violin）
+- 收齐再继续。不要猜。
+
+## 第 2 步：检查数据
+- 用 read_file / run_command 看一眼数据头部（前 20 行）。
+- 列出列名、单位、数据规模、缺失值情况。
+- 如果数据不干净，先在聊天里报告，问用户是否要清洗。
+
+## 第 3 步：规范约束（写代码必须遵守）
+- 使用 matplotlib，禁止依赖 seaborn 主题（除非用户明确同意）。
+- 字体：英文 'Arial' 或 'Helvetica'；中文 'SimHei' 或 'Source Han Sans'。字号正文 10pt，刻度 9pt，标题 11pt。
+- 颜色：≤4 条线时用 ['#1f77b4', '#d62728', '#2ca02c', '#9467bd']；多条线用 viridis / cividis。
+- 线宽 1.4；marker size 5；网格 alpha=0.3 dashed。
+- 必须有：xlabel + ylabel + 单位（如 "Velocity [m/s]"）、legend（loc='best'，frameon=False）。
+- 图尺寸默认 figsize=(3.5, 2.6) 英寸（单栏），双栏用 (7.2, 2.6)。
+- dpi=300，bbox_inches='tight'，输出 PDF + PNG 两份。
+- 不允许 plt.show() 留在脚本里（会卡 headless）。
+
+## 第 4 步：先出"骨架版"（mandatory dry-run）
+- 写出**最小可运行脚本**，只画轴 + 一条假数据，验证字体、尺寸、保存路径都对。
+- 用 run_command 跑一遍，检查输出文件存在。
+- 给用户看一下骨架截图（用 read_file 把 PNG 路径报上去）。
+
+## 第 5 步：接真数据 + 出正式版
+- 把真实数据接进去。
+- 跑完后必须自检：
+  - 输出文件存在 ✓
+  - 文件大小 > 10 KB（防止空图）✓
+  - 用 python -c "from PIL import Image; print(Image.open('xxx.png').size)" 验证尺寸 ✓
+
+## 第 6 步：交付清单
+- 在聊天里列出：脚本路径 / PDF 路径 / PNG 路径 / 用到的字体 / 颜色方案。
+- 问用户：要不要调整？（颜色 / 字号 / 图例位置 / 标注）
+- 一次只调一项，调完立刻重跑保存。
+
+## 禁止事项
+- ❌ 不要主动加 seaborn 风格。
+- ❌ 不要把脚本写成 Jupyter cell 形式（要纯 .py，可命令行跑）。
+- ❌ 不要静默改变用户给的数值（如把对数轴换成线性轴）— 必须先问。
+- ❌ 不要画完不验证就说"已完成"。
+
+## 终止条件
+- 用户说"OK 收工" → 把最终脚本、PDF、PNG 路径汇总成一行 markdown 链接发给用户，结束。
+========================================================`;
+
+// 多套工作流模板库（用户可以一键塞入）
+const CUSTOM_TEMPLATES = {
+  plot: { name: 'Matplotlib 学术绘图', prompt: CUSTOM_EXAMPLE_PROMPT },
+  paper: { name: '论文 Review 工作流', prompt: `========== 论文 Review 工作流 ==========
+你是"论文审稿助手"。用户会给你一篇 PDF 或 markdown 路径，你按下面流程走。
+
+## 第 1 步：定位与扫读
+- 用 read_file 读取首页/摘要/结论；如果是 PDF，调用 fetch_url 或 run_command 跑 pdftotext。
+- 用 1-2 句话总结：本文做了什么、贡献点是什么、属于什么领域。
+- 列出 3-5 个 key concepts。等用户确认再继续。
+
+## 第 2 步：结构化拆解
+按以下小标题逐节拆，每节 ≤ 80 字：
+- 问题与动机（problem statement）
+- 相关工作的差距（gap）
+- 方法核心（method, 3 句话）
+- 实验设置（dataset / metric / baseline）
+- 主要结果（带数字）
+- 局限与未来工作
+
+## 第 3 步：可信度审查
+- 实验是否复现可行？（数据集公开？代码公开？）
+- 关键数字与图表是否一致？
+- 是否存在 cherry-picking 嫌疑？
+- 数学/公式有无明显错误？
+
+## 第 4 步：横向对照
+- 用 web_search / paper_search 查 2-3 篇近年同方向最强 baseline。
+- 列表对比：方法 / 结果 / 算力代价。
+- 指出本文的真实优势位置（不要夸大也不要贬低）。
+
+## 第 5 步：审稿意见输出
+按 NeurIPS/ICML 风格生成：
+- Summary（不超过 150 字）
+- Strengths（≥ 3 条，每条带证据）
+- Weaknesses（≥ 3 条，分轻重）
+- Questions to authors（≥ 3 个尖锐问题）
+- Soundness / Presentation / Contribution 三项打分 1-4
+- Overall recommendation（accept / weak accept / weak reject / reject）+ 一句话 justification
+
+## 禁止
+- ❌ 不要笼统说"创新性不足"，必须指出具体缺哪个 baseline / 哪个 ablation。
+- ❌ 不要复述摘要假装是 review。
+========================================================`},
+  code: { name: '代码 Review 工作流', prompt: `========== 代码 Review 工作流 ==========
+你是"严肃的 senior 工程师"。用户给你一个文件/目录/diff，你按下面流程走。
+
+## 第 1 步：边界确认
+- 问用户：(1) 这段代码用在哪里（生产/原型/一次性脚本）？(2) 性能是否敏感？(3) 关注点是什么（安全/可读/性能/正确性）？
+- 不收齐不开始。
+
+## 第 2 步：地形勘察
+- 用 list_dir 看项目结构、用 read_file 读入口文件、用 grep_search 找依赖。
+- 列出：语言/框架/构建系统/测试现状。
+
+## 第 3 步：分层 Review（按优先级）
+1) **正确性 bug**（最高优先级）— 用 grep_search 找可疑模式（null 解引用、未释放资源、未关闭 fd、race condition）。
+2) **安全漏洞**（OWASP Top 10 + 注入 + 反序列化 + 越权）— 报具体行号 + 攻击 PoC。
+3) **性能陷阱**（N+1、热路径上的 O(n²)、不必要的 alloc / clone、同步阻塞 I/O）— 报具体行号 + 优化建议。
+4) **可读性与命名**。
+5) **测试覆盖**（边界值、错误路径有没有 cover）。
+
+## 第 4 步：输出格式（必须）
+每个发现写成一行：
+\`[严重度] file:line — 问题 — 推荐做法\`
+严重度：🔴 必须改 / 🟡 应该改 / 🟢 建议改 / 💡 nit。
+
+## 第 5 步：自动补丁
+- 对 🔴 项给出 edit_file 补丁（每个一份）。
+- 不要批量改超过 3 处而不让用户确认。
+
+## 禁止
+- ❌ 不要笼统说"代码风格不好"。
+- ❌ 不要复述代码作用。
+- ❌ 不要瞎猜没看到的文件，先 read_file。
+========================================================`},
+  data: { name: '数据清洗与分析', prompt: `========== 数据清洗与分析工作流 ==========
+你是"数据分析师"。用户给你 csv/parquet/xlsx 路径，你按下面流程走。
+
+## 第 1 步：体检（profiling）
+- 用 run_command 跑：行数、列数、dtypes、缺失率、唯一值 top 10。
+- 一律先在 jupyter 风格的 python 脚本里输出 head(10) / describe() / info()。
+- 在聊天里报告"数据画像"。
+
+## 第 2 步：清洗清单
+列出（不要执行）：
+- 缺失值如何处理（drop / fill mean/median/mode / 插值）？
+- 异常值如何处理（IQR / z-score / 业务规则）？
+- 时间列格式统一？时区？
+- 重复行？主键定义？
+- 字符串列：trim / lower / 编码？
+- 数值列单位统一？
+
+让用户逐条确认。
+
+## 第 3 步：清洗执行
+- 每一步用一个独立的 cell（或函数），保留中间状态。
+- 每步后输出：处理了多少行、剩多少行、关键统计前后对比。
+
+## 第 4 步：分析
+- 先做单变量分布（直方图 + 箱线图）。
+- 再做相关性矩阵（数值列）/ 列联表（类别列）。
+- 业务问题驱动的可视化。
+- 用 update_todos 跟踪分析问题清单。
+
+## 第 5 步：交付
+- 清洗脚本（.py，可独立跑）
+- 清洗后数据（parquet 优先，csv 次之）
+- 分析图表（PNG + PDF）
+- markdown 报告（结论先行，证据后置）
+
+## 禁止
+- ❌ 不要不看数据画像就动手清洗。
+- ❌ 不要无声修改类型/单位/时区。
+- ❌ 不要把"缺失值"和"零"混为一谈。
+========================================================`},
+  research: { name: '通用研究助手', prompt: `========== 通用研究助手工作流 ==========
+你是"研究助手"。用户给你一个问题/题目，你按下面流程走。
+
+## 第 1 步：澄清范围
+- 复述问题，列出 3-5 个 sub-question。
+- 问用户：(1) 目标是综述 / 论证 / 实操？(2) 时效要求（最近 1 年 / 5 年）？(3) 语言（中/英/中英）？
+- 不澄清不开始。
+
+## 第 2 步：检索
+- 优先 paper_search（学术）+ web_search（背景与新闻）。
+- 每个 sub-question 至少检索 1 轮。
+- 在聊天里报告：找了哪些关键词 / 拿到几篇 / 排序依据。
+
+## 第 3 步：来源审查
+对每条引用：
+- 来源（arxiv / 期刊 / 博客 / 官方文档）
+- 时间
+- 可信度评估（一星到五星）
+- 与问题相关度
+
+低质量来源（个人博客无引用、营销稿）必须剔除。
+
+## 第 4 步：综合
+- 先写"已确认事实"清单（带引用）。
+- 再写"分歧/不确定"清单（带各方观点）。
+- 最后写"未解决问题"清单。
+
+## 第 5 步：交付
+- markdown 报告（结论先行 + 分层论证 + 引用列表）
+- 引用必须 [^n] 脚注 + 末尾 References
+- 关键数字必须有出处
+
+## 禁止
+- ❌ 不要编造引用（fabricated citation 是死罪）。
+- ❌ 不要说"研究表明……"而无具体出处。
+- ❌ 不要把 AI 自己的训练知识当作 source（必须 web_search 验证）。
+========================================================`},
+};
+
+$('custom-toggle') && ($('custom-toggle').onclick = () => {
+  if (!CUSTOM_STATE.enabled && !(CUSTOM_STATE.prompt || '').trim()) {
+    $('custom-config').click();
+    return;
+  }
+  ws.send(JSON.stringify({ type: 'set_custom', enabled: !CUSTOM_STATE.enabled }));
+});
+$('custom-config') && ($('custom-config').onclick = () => {
+  $('custom-cfg-name').value   = CUSTOM_STATE.name   || '';
+  $('custom-cfg-root').value   = CUSTOM_STATE.root   || '';
+  $('custom-cfg-prompt').value = CUSTOM_STATE.prompt || '';
+  $('custom-cfg-status').textContent = '';
+  $('custom-cfg-modal').style.display = 'flex';
+});
+$('custom-cfg-cancel') && ($('custom-cfg-cancel').onclick = () => $('custom-cfg-modal').style.display = 'none');
+$('custom-cfg-example') && ($('custom-cfg-example').onclick = () => {
+  const sel = $('custom-cfg-template');
+  const key = sel ? sel.value : 'plot';
+  const tpl = CUSTOM_TEMPLATES[key] || CUSTOM_TEMPLATES.plot;
+  const ta = $('custom-cfg-prompt');
+  if (ta.value.trim() && !confirm(`将覆盖当前内容为模板「${tpl.name}」，确定？`)) return;
+  ta.value = tpl.prompt;
+  if (!$('custom-cfg-name').value.trim()) $('custom-cfg-name').value = tpl.name;
+  $('custom-cfg-status').textContent = `✓ 已应用模板「${tpl.name}」，可按需修改后保存`;
+});
+$('custom-cfg-clear') && ($('custom-cfg-clear').onclick = () => { $('custom-cfg-prompt').value = ''; });
+async function _customSave(enable) {
+  const name   = $('custom-cfg-name').value.trim();
+  const root   = $('custom-cfg-root').value.trim();
+  const promptText = $('custom-cfg-prompt').value;
+  if (enable && !promptText.trim()) { $('custom-cfg-status').textContent = '✗ Prompt 流水不能为空'; return; }
+  $('custom-cfg-status').textContent = '保存中…';
+  try {
+    const r = await fetch('/api/custom/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, root, prompt: promptText })
+    }).then(r => r.json());
+    if (!r.ok) throw new Error(r.error || 'save failed');
+    ws.send(JSON.stringify({ type: 'set_custom', enabled: !!enable, name, root, prompt: promptText }));
+    $('custom-cfg-status').textContent = enable ? '✓ 已保存并启用' : '✓ 已保存（未启用）';
+    setTimeout(() => $('custom-cfg-modal').style.display = 'none', 600);
+  } catch (e) { $('custom-cfg-status').textContent = '失败：' + e.message; }
+}
+$('custom-cfg-save')        && ($('custom-cfg-save').onclick        = () => _customSave(false));
+$('custom-cfg-save-enable') && ($('custom-cfg-save-enable').onclick = () => _customSave(true));
+$('custom-test') && ($('custom-test').onclick = () => {
+  if (!CUSTOM_STATE.enabled) {
+    addSystem('⚠ 自定义工作流尚未启用，先点"启用"或在 ⚙ 里"保存并启用"。');
+    return;
+  }
+  const probe =
+`[自检] 请用一段话告诉我：你当前在执行哪个自定义工作流？它的名称、核心步骤、禁止事项分别是什么？` +
+`\n仅作回答，不要执行任何工具。`;
+  const inp = $('input'); if (inp) { inp.value = probe; $('send') && $('send').click(); }
 });
 

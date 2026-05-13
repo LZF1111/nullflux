@@ -10,17 +10,19 @@
 </head>
 <body>
   <header>
-    <div class="brand">Null<span class="accent">Flux</span><span class="author-tag">by LZF</span></div>
+    <div class="brand">Null<span class="accent">Flux</span><span class="author-tag">by LZF</span><span class="ver-tag">v4</span></div>
     <div class="meta">
       <button id="open-folder" title="打开文件夹">文件夹</button>
       <button id="open-file" title="打开文件">打开文件</button>
       <span id="ws-display" class="ws-display muted"></span>
+      <span id="mode-pills" class="mode-pills" title="当前启用的 Beta 模式"></span>
       <span id="model-info" class="muted"></span>
       <label class="toggle"><input type="checkbox" id="auto-mode" checked /> Auto</label>
-      <label class="toggle sim"><input type="checkbox" id="sim-mode" /> 仿真</label>
+      <!-- sim-mode toggle removed in v2: ParaView panel is auto-opened by OpenFOAM/MFIX/LBM Beta toggles. -->
       <button id="py-picker" class="py-btn" title="选择 Python 环境">Python: <span id="py-label">未选择</span></button>
       <button id="model-picker" class="py-btn" style="background: rgba(232,121,249,.08) !important; border-color:#a855f7 !important; color:#f0abfc !important;" title="选择 LLM 模型 / 登录 GitHub Copilot">🤖 <span id="model-label">DeepSeek</span></button>
       <button id="tools-btn" class="py-btn" style="background: rgba(168,85,247,.1) !important; border-color:#7c3aed !important; color:#d8b4fe !important;" title="选择可用工具">🔧 工具</button>
+      <button id="digitize-btn" class="py-btn" style="background: rgba(245,158,11,.10) !important; border-color:#b45309 !important; color:#fcd34d !important;" title="从论文/截图里手动标注数据点，作为参考/对比数据集">📍 标注图表</button>
       <div class="menu-wrap">
         <button id="view-btn" class="py-btn" title="显示/隐藏面板">👁 视图 ▾</button>
         <div id="view-menu" class="view-menu" style="display:none;"></div>
@@ -115,6 +117,12 @@
         </div>
         <div class="modal-actions"><button class="no" id="sim-browse-cancel">取消</button></div>
       </div>
+    </div>
+
+    <!-- V4: Agent 学者观察员（博士小人 2D 动画） -->
+    <div class="panel" data-pid="scholar" data-default="left:1100;top:60;width:300;height:380">
+      <div class="panel-head"><span class="grip">⋮⋮</span><span class="ptitle">🎓 Agent 观察员</span></div>
+      <div id="scholar-body" class="panel-body" style="padding:0;"></div>
     </div>
 
     <!-- 图片库（agent 找到的图片自动汇集） -->
@@ -231,6 +239,155 @@
         <div style="text-align:right;margin-top:8px;display:flex;gap:6px;justify-content:flex-end;">
           <button class="mini" id="foam-cfg-cancel">取消</button>
           <button class="mini" id="foam-cfg-save">保存并启用</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- MFIX Beta：教程/克隆/检查 -->
+    <div class="panel" data-pid="mfix" data-default="left:256;top:660;width:760;height:200" style="display:none;">
+      <div class="panel-head">
+        <span class="grip">⋮⋮</span>
+        <span class="ptitle">MFIX <span class="small muted">Beta</span> <span id="mfix-state" class="small muted">未启用</span></span>
+        <span class="pacts">
+          <button class="mini" id="mfix-toggle" title="启用/关闭 MFIX Beta">启用</button>
+          <button class="mini" id="mfix-config" title="设置 MFIX 安装路径与激活脚本">⚙</button>
+        </span>
+      </div>
+      <div class="panel-body" style="padding:6px;display:flex;flex-direction:column;gap:6px;overflow:auto;">
+        <div id="mfix-root-row" class="small muted" style="word-break:break-all;">MFIX_ROOT: <span id="mfix-root-text">(未设置)</span></div>
+        <div style="display:flex;gap:4px;">
+          <button class="mini" id="mfix-flow-have" style="flex:1;padding:5px;" title="告诉智能体我已经有具体算例">我有具体算例</button>
+          <button class="mini" id="mfix-flow-need" style="flex:1;padding:5px;" title="让智能体列本地教程候选">没有，列教程候选</button>
+        </div>
+        <div style="display:flex;gap:4px;align-items:center;">
+          <input id="mfix-q" type="text" placeholder="如: fluidBed / Geldart / DEM / TFM" style="flex:1;font-size:10px;padding:2px 5px;background:var(--bg2);border:1px solid var(--line2);color:var(--text);border-radius:3px;" />
+          <button class="mini" id="mfix-search">搜索</button>
+        </div>
+        <div id="mfix-results" style="flex:1;overflow:auto;font-size:10px;line-height:1.4;background:#0a0612;border:1px solid var(--line2);border-radius:4px;padding:6px;min-height:90px;">
+          <div class="muted small" style="text-align:center;padding:14px;">先填 MFIX 根目录（⚙），再输入关键词搜 tutorials/。</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- mfix 配置弹窗 -->
+    <div id="mfix-cfg-modal" style="display:none;position:fixed;inset:0;z-index:9998;background:rgba(0,0,0,0.7);align-items:center;justify-content:center;">
+      <div style="background:var(--bg);border:1px solid var(--line2);border-radius:6px;padding:14px 16px;width:560px;max-width:90vw;">
+        <div style="font-size:13px;margin-bottom:8px;">设置 MFIX 安装路径</div>
+        <div class="small muted" style="margin-bottom:6px;">根目录需要包含 <code>tutorials/</code>（含 mfix.dat 或 *.mfx 的子目录）和 <code>model/</code>。激活脚本通常是 conda env 的 <code>activate</code> 或 <code>$MFIX_HOME/build/.../activate</code>。</div>
+        <label class="small muted">MFIX 根目录</label>
+        <input id="mfix-cfg-root" type="text" placeholder="如 /opt/mfix-22.1" style="width:100%;font-size:11px;padding:5px 7px;background:var(--bg2);border:1px solid var(--line2);color:var(--text);border-radius:3px;margin:3px 0 8px 0;" />
+        <label class="small muted">激活脚本（可选，留空则直接 mfixsolver）</label>
+        <input id="mfix-cfg-bash" type="text" placeholder="如 /opt/mfix-22.1/activate.sh 或 ~/miniconda3/etc/profile.d/conda.sh" style="width:100%;font-size:11px;padding:5px 7px;background:var(--bg2);border:1px solid var(--line2);color:var(--text);border-radius:3px;margin:3px 0 8px 0;" />
+        <div id="mfix-cfg-status" class="small muted" style="min-height:18px;"></div>
+        <div style="text-align:right;margin-top:8px;display:flex;gap:6px;justify-content:flex-end;">
+          <button class="mini" id="mfix-cfg-cancel">取消</button>
+          <button class="mini" id="mfix-cfg-save">保存并启用</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- LBM Beta：教程/克隆/检查 -->
+    <div class="panel" data-pid="lbm" data-default="left:256;top:870;width:760;height:200" style="display:none;">
+      <div class="panel-head">
+        <span class="grip">⋮⋮</span>
+        <span class="ptitle">LBM <span class="small muted">Beta</span> <span id="lbm-state" class="small muted">未启用</span></span>
+        <span class="pacts">
+          <button class="mini" id="lbm-toggle" title="启用/关闭 LBM Beta">启用</button>
+          <button class="mini" id="lbm-config" title="设置 LBM 算例根目录与默认运行命令">⚙</button>
+        </span>
+      </div>
+      <div class="panel-body" style="padding:6px;display:flex;flex-direction:column;gap:6px;overflow:auto;">
+        <div id="lbm-root-row" class="small muted" style="word-break:break-all;">LBM_TUTORIAL_ROOT: <span id="lbm-root-text">(未设置)</span></div>
+        <div style="display:flex;gap:4px;">
+          <button class="mini" id="lbm-flow-have" style="flex:1;padding:5px;" title="告诉智能体我已经有具体算例">我有具体算例</button>
+          <button class="mini" id="lbm-flow-need" style="flex:1;padding:5px;" title="让智能体列本地教程候选">没有，列教程候选</button>
+          <button class="mini" id="lbm-flow-algo" style="flex:1;padding:5px;background:rgba(34,211,238,.12);border-color:#0e7490;color:#67e8f9;" title="先告诉智能体算法（D2Q9 BGK / D3Q19 MRT / Cumulant …）">🧬 指定算法</button>
+        </div>
+        <div style="display:flex;gap:4px;align-items:center;">
+          <input id="lbm-q" type="text" placeholder="如: D3Q19 / MRT / Shan-Chen / cavity" style="flex:1;font-size:10px;padding:2px 5px;background:var(--bg2);border:1px solid var(--line2);color:var(--text);border-radius:3px;" />
+          <button class="mini" id="lbm-search">搜索</button>
+        </div>
+        <div id="lbm-results" style="flex:1;overflow:auto;font-size:10px;line-height:1.4;background:#0a0612;border:1px solid var(--line2);border-radius:4px;padding:6px;min-height:90px;">
+          <div class="muted small" style="text-align:center;padding:14px;">先填 LBM 算例根目录（⚙），再输入关键词搜。无数据库 — 完全靠你给的目录。</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- lbm 配置弹窗 -->
+    <div id="lbm-cfg-modal" style="display:none;position:fixed;inset:0;z-index:9998;background:rgba(0,0,0,0.7);align-items:center;justify-content:center;">
+      <div style="background:var(--bg);border:1px solid var(--line2);border-radius:6px;padding:14px 16px;width:560px;max-width:90vw;">
+        <div style="font-size:13px;margin-bottom:8px;">设置 LBM 算例根目录</div>
+        <div class="small muted" style="margin-bottom:6px;">指向你**自己**整理的 LBM 算例集合（任何含 README/main.py/main.cpp/input.* 的子目录都会被识别为 case）。算法和框架不限。</div>
+        <label class="small muted">LBM 算例根目录</label>
+        <input id="lbm-cfg-root" type="text" placeholder="如 /home/me/lbm-cases" style="width:100%;font-size:11px;padding:5px 7px;background:var(--bg2);border:1px solid var(--line2);color:var(--text);border-radius:3px;margin:3px 0 8px 0;" />
+        <label class="small muted">默认运行命令（可选，每个 case 也可单独指定）</label>
+        <input id="lbm-cfg-runcmd" type="text" placeholder="如 python3 main.py 或 ./build/lb_main 或 mpirun -np 4 ./lb" style="width:100%;font-size:11px;padding:5px 7px;background:var(--bg2);border:1px solid var(--line2);color:var(--text);border-radius:3px;margin:3px 0 8px 0;" />
+        <div id="lbm-cfg-status" class="small muted" style="min-height:18px;"></div>
+        <div style="text-align:right;margin-top:8px;display:flex;gap:6px;justify-content:flex-end;">
+          <button class="mini" id="lbm-cfg-cancel">取消</button>
+          <button class="mini" id="lbm-cfg-save">保存并启用</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 自定义工作流 (Beta) 面板 -->
+    <div class="panel" data-pid="custom" data-default="left:256;top:1090;width:760;height:200">
+      <div class="panel-head">
+        <span class="grip">⋮⋮</span>
+        <span class="ptitle">自定义工作流 <span class="small muted">Beta</span> <span id="custom-state" class="small muted">未启用</span></span>
+        <span class="pacts">
+          <button class="mini" id="custom-test" title="问 agent 当前工作流是什么（验证 prompt 是否生效）">🧪 测试</button>
+          <button class="mini" id="custom-toggle" title="启用/关闭 自定义工作流">启用</button>
+          <button class="mini" id="custom-config" title="编辑 prompt 流水">⚙</button>
+        </span>
+      </div>
+      <div class="panel-body" style="padding:6px;display:flex;flex-direction:column;gap:6px;overflow:auto;">
+        <div class="small muted" style="word-break:break-all;">
+          名称：<span id="custom-name-text">(未命名)</span> · 根目录：<span id="custom-root-text">(可选/未设置)</span>
+        </div>
+        <div class="small muted" style="line-height:1.45;">
+          ↳ 启用后，你写的 prompt 流水会拼到 system message。智能体仍能用 <code>run_command / read_file / edit_file / grep_search / list_dir / fetch_url / web_search / paper_search</code> 等通用工具。不要求你写"工具列表"——只写"步骤约束"即可。
+        </div>
+        <div id="custom-preview" class="small" style="flex:1;overflow:auto;background:#0a0612;border:1px solid var(--line2);border-radius:4px;padding:6px;white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace;font-size:10.5px;color:#a78bfa;min-height:60px;">
+          (尚未配置 prompt 流水。点 ⚙ 写一段，或塞参考示例。)
+        </div>
+      </div>
+    </div>
+
+    <!-- custom 配置弹窗 -->
+    <div id="custom-cfg-modal" style="display:none;position:fixed;inset:0;z-index:9998;background:rgba(0,0,0,0.7);align-items:center;justify-content:center;">
+      <div style="background:var(--bg);border:1px solid var(--line2);border-radius:6px;padding:14px 16px;width:780px;max-width:94vw;max-height:88vh;display:flex;flex-direction:column;">
+        <div style="font-size:13px;margin-bottom:6px;">自定义工作流 (Beta) — 流水式 prompt</div>
+        <div class="small muted" style="margin-bottom:8px;line-height:1.5;">
+          这里写的内容会原样拼到 system prompt 末尾。建议用"步骤化"语气，比如<b>第 1 步… 第 2 步…</b>。智能体已经具备通用工具，你只要规定<b>流程 / 校验点 / 输出约束</b>即可。
+        </div>
+        <div style="display:flex;gap:6px;margin-bottom:6px;">
+          <label class="small muted" style="flex:0 0 80px;line-height:24px;">名称</label>
+          <input id="custom-cfg-name" type="text" placeholder="如 Matplotlib 学术绘图工作流" style="flex:1;font-size:11px;padding:5px 7px;background:var(--bg2);border:1px solid var(--line2);color:var(--text);border-radius:3px;" />
+        </div>
+        <div style="display:flex;gap:6px;margin-bottom:6px;">
+          <label class="small muted" style="flex:0 0 80px;line-height:24px;">根目录（可选）</label>
+          <input id="custom-cfg-root" type="text" placeholder="如 /home/me/figures 或留空" style="flex:1;font-size:11px;padding:5px 7px;background:var(--bg2);border:1px solid var(--line2);color:var(--text);border-radius:3px;" />
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px;">
+          <label class="small muted" style="flex:1;">Prompt 流水（≤ 20000 字符）</label>
+          <select id="custom-cfg-template" class="mini" title="选择参考模板" style="font-size:11px;padding:3px 6px;background:var(--bg2);border:1px solid var(--line2);color:var(--text);border-radius:3px;">
+            <option value="">📚 选择模板…</option>
+            <option value="plot">学术绘图 (Matplotlib)</option>
+            <option value="paper">论文 Review 工作流</option>
+            <option value="code">代码 Review 工作流</option>
+            <option value="data">数据清洗与分析</option>
+            <option value="research">通用研究助手</option>
+          </select>
+          <button class="mini" id="custom-cfg-example" title="塞入选中模板">📋 应用</button>
+          <button class="mini" id="custom-cfg-clear">清空</button>
+        </div>
+        <textarea id="custom-cfg-prompt" placeholder="可参考下方示例。建议按 第1步/第2步/校验/输出 来写。" style="flex:1;min-height:280px;font-size:11.5px;padding:8px;background:var(--bg2);border:1px solid var(--line2);color:var(--text);border-radius:3px;font-family:ui-monospace,Consolas,monospace;line-height:1.5;resize:vertical;"></textarea>
+        <div id="custom-cfg-status" class="small muted" style="min-height:18px;margin-top:6px;"></div>
+        <div style="text-align:right;margin-top:6px;display:flex;gap:6px;justify-content:flex-end;">
+          <button class="mini" id="custom-cfg-cancel">取消</button>
+          <button class="mini" id="custom-cfg-save">仅保存</button>
+          <button class="mini" id="custom-cfg-save-enable" style="background:rgba(139,92,246,.18);border-color:#7c3aed;color:#c4b5fd;">保存并启用</button>
         </div>
       </div>
     </div>
@@ -406,6 +563,21 @@
           </label>
         </div>
         <div class="setting-section">
+          <div class="setting-section-title">视觉模型（vision_analyze 读图专用，V4.1）</div>
+          <label>VLM Base URL<input type="text" id="set-vision-baseurl" placeholder="https://api.siliconflow.cn" /></label>
+          <label>VLM 模型名<input type="text" id="set-vision-model" list="vision-model-list" placeholder="Pro/moonshotai/Kimi-K2.6" />
+            <datalist id="vision-model-list">
+              <option value="Pro/moonshotai/Kimi-K2.6" />
+              <option value="Qwen/Qwen2.5-VL-72B-Instruct" />
+              <option value="Pro/Qwen/Qwen2.5-VL-7B-Instruct" />
+              <option value="deepseek-ai/deepseek-vl2" />
+              <option value="THUDM/glm-4v-9b" />
+            </datalist>
+          </label>
+          <label>VLM API Key（留空 = 复用上面主 API Key）<input type="password" id="set-vision-apikey" placeholder="sk-... (与主 key 同账号可留空)" /></label>
+          <div class="small muted" style="margin-top:-4px;">主模型不是 VLM 时，<code>vision_analyze</code> 工具会自动路由到这里读图，再把文字结果回传给主模型。</div>
+        </div>
+        <div class="setting-section">
           <div class="setting-section-title">仿真</div>
           <label>ParaView 主程序（paraview.exe / paraview）<input type="text" id="set-paraview-exe" placeholder="C:\Program Files\ParaView 5.12.0\bin\paraview.exe" /></label>
           <label>pvpython（可选）<input type="text" id="set-paraview-py" /></label>
@@ -420,6 +592,8 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
+  <script src="/digitizer.js"></script>
+  <script src="/scholar.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>
