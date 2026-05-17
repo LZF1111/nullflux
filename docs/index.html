@@ -3,11 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>NullFlux — 你的本地化 CFD 仿真工程专家</title>
-<meta name="description" content="NullFlux 是一个本地部署的 AI 仿真工程师。不止 coding，更读论文、建网格、跑 OpenFOAM、调 ParaView。任意大模型可接入，国产模型在 CFD 任务上性价比与效果均优于通用 Codex / Claude Code。">
-<meta name="keywords" content="CFD, OpenFOAM, MFIX, LBM, ParaView, AI Agent, 仿真工程, 科学计算, 论文复现, LZF">
-<meta property="og:title" content="NullFlux — 你的本地化 CFD 仿真工程专家">
-<meta property="og:description" content="不止是 coding agent。任意大模型接入，国产模型性价比更高，仿真任务效果优于 Codex / Claude Code。">
+<title>NullFlux — 不只是 coding agent，更是你的仿真工程专家</title>
+<meta name="description" content="NullFlux 是一个本地部署的 AI 仿真工程师。读论文、建网格、跑开源流体力学软件（OpenFOAM / MFIX / LBM / SU2 …）、调 ParaView，还能为你从零开发未知求解器。任意大模型可接入，国产模型在 CFD 任务上性价比与效果均优于通用 Codex / Claude Code。">
+<meta name="keywords" content="CFD, OpenFOAM, MFIX, LBM, SU2, ParaView, AI Agent, 仿真工程, 科学计算, 论文复现, 求解器开发, LZF">
+<meta property="og:title" content="NullFlux — 不只是 coding agent，更是你的仿真工程专家">
+<meta property="og:description" content="不只是 coding agent，更是你的仿真工程专家。任意大模型接入；国产模型性价比更高；能直接驱动开源流体力学软件，并能从零开发未知求解器。">
 <meta property="og:image" content="screenshot-main.png">
 <meta property="og:type" content="website">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -127,6 +127,45 @@ section{padding:120px 0;position:relative}
 .pitch h2{font-size:clamp(34px,4.2vw,56px);max-width:880px;margin:0 auto 20px}
 .pitch p.subhead{font-size:clamp(18px,1.9vw,22px);max-width:760px;margin:0 auto}
 .pitch code{font-size:.85em;background:var(--bg-card);padding:1px 6px;border-radius:5px}
+.pitch-stats{
+  display:grid;grid-template-columns:repeat(4,1fr);gap:24px;
+  max-width:760px;margin:48px auto 0;
+}
+@media (max-width:680px){.pitch-stats{grid-template-columns:repeat(2,1fr)}}
+.ps{text-align:center;padding:18px 8px;border-left:1px solid var(--line)}
+.ps:first-child{border-left:none}
+@media (max-width:680px){.ps{border-left:none;border-top:1px solid var(--line);padding-top:24px}.ps:first-child,.ps:nth-child(2){border-top:none;padding-top:18px}}
+.ps-num{
+  font-family:'SF Pro Display',Inter,sans-serif;
+  font-size:clamp(28px,3.2vw,40px);font-weight:600;
+  letter-spacing:-0.02em;color:var(--fg);line-height:1;
+}
+.ps-lbl{font-size:13px;color:var(--fg-mute);margin-top:8px;letter-spacing:.02em}
+
+/* solver dev showcase */
+.solver{background:var(--bg-soft);padding:120px 0}
+.solver-grid{display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:center;max-width:1080px;margin:0 auto}
+@media (max-width:880px){.solver-grid{grid-template-columns:1fr;gap:32px}}
+.solver-copy .eyebrow{margin-bottom:14px}
+.solver-copy h2{font-size:clamp(32px,3.6vw,46px);font-weight:600;letter-spacing:-0.022em;line-height:1.12;margin-bottom:18px;color:var(--fg);font-family:'SF Pro Display',Inter,'Noto Sans SC',sans-serif}
+.solver-copy h2 .accent{color:var(--accent)}
+.solver-copy p{color:var(--fg-dim);font-size:16.5px;line-height:1.65;margin-bottom:14px}
+.solver-list{margin-top:22px;display:grid;gap:14px}
+.solver-list .it{display:flex;gap:14px;align-items:flex-start}
+.solver-list .it .k{font-family:'JetBrains Mono',monospace;font-size:11.5px;font-weight:600;color:var(--accent);background:rgba(0,102,204,.08);padding:4px 8px;border-radius:5px;flex-shrink:0;letter-spacing:.04em;margin-top:1px}
+.solver-list .it .t{font-size:15px;color:var(--fg);line-height:1.55}
+.solver-list .it .t b{font-weight:600}
+.solver-list .it .t span{color:var(--fg-dim)}
+.solver-code{
+  background:var(--bg-dark);border-radius:var(--radius);overflow:hidden;
+  box-shadow:0 24px 60px -20px rgba(0,0,0,.28);
+}
+.solver-code .terminal-head{background:#2c2c2e}
+.solver-code pre{padding:24px 26px;font-size:13px;line-height:1.75;color:#f5f5f7;overflow-x:auto;font-family:'JetBrains Mono','SF Mono',monospace}
+.solver-code .c{color:#86868b}
+.solver-code .k{color:#7ec0ff}
+.solver-code .s{color:#9fdf9f}
+.solver-code .m{color:#ffb84d}
 
 /* tiles */
 .tiles{padding:24px 0 60px;background:var(--bg)}
@@ -179,6 +218,12 @@ section{padding:120px 0;position:relative}
 .feat .icon{
   width:42px;height:42px;border-radius:11px;background:var(--bg-card);
   display:grid;place-items:center;font-size:22px;margin-bottom:18px;
+}
+.feat .ico-mono{
+  display:inline-block;font-family:'JetBrains Mono','SF Mono',monospace;
+  font-size:12px;letter-spacing:.08em;font-weight:600;
+  color:var(--accent);background:rgba(0,102,204,.08);
+  padding:5px 10px;border-radius:6px;margin-bottom:18px;
 }
 .feat h4{font-size:17px;font-weight:600;letter-spacing:-0.01em;margin-bottom:8px;color:var(--fg)}
 .feat p{font-size:14.5px;color:var(--fg-dim);line-height:1.55}
@@ -307,6 +352,7 @@ footer .links{display:flex;gap:24px;flex-wrap:wrap}
     </a>
     <div class="nav-links">
       <a href="#pitch">概述</a>
+      <a href="#solver">求解器</a>
       <a href="#features">特性</a>
       <a href="#compare">对比</a>
       <a href="#install">安装</a>
@@ -318,11 +364,11 @@ footer .links{display:flex;gap:24px;flex-wrap:wrap}
 
 <section class="hero" id="top">
   <div class="wrap">
-    <div class="eyebrow">v0.6.0 &middot; 本地部署 &middot; Linux x64</div>
-    <h1>不止是 coding agent。<br>是你的<span class="accent">仿真工程专家</span>。</h1>
-    <p class="lede">读论文 &middot; 建网格 &middot; 跑 OpenFOAM &middot; 调 ParaView &middot; 看云图 &middot; 判收敛</p>
-    <p class="lede">一个对话框，搞定整条 CFD 工作流。</p>
-    <p class="author">by LZF &middot; 任意大模型可接入</p>
+    <div class="eyebrow">v0.6.1 &middot; 本地部署 &middot; Linux x64</div>
+    <h1>不只是 coding agent，<br>更是你的<span class="accent">仿真工程专家</span>。</h1>
+    <p class="lede">读论文 &middot; 建网格 &middot; 驱动开源流体力学软件 &middot; 调 ParaView &middot; 看云图 &middot; 判收敛</p>
+    <p class="lede">必要时，还能为你从零写一个<span style="color:var(--accent)">未知求解器</span>。</p>
+    <p class="author">by LZF &middot; 任意大模型可接入 &middot; 国产模型性价比之选</p>
     <div class="cta-row">
       <a href="https://github.com/LZF1111/nullflux/releases/latest" class="btn btn-primary">立即下载</a>
       <a href="#features" class="btn-link">了解更多</a>
@@ -340,7 +386,13 @@ footer .links{display:flex;gap:24px;flex-wrap:wrap}
   <div class="wrap">
     <div class="eyebrow">为什么是 NullFlux</div>
     <h2 class="headline">通用代码 Agent 写得了脚本，<br>却跑不通一个仿真。</h2>
-    <p class="subhead">Codex、Claude Code 这类通用助手能写代码，但不懂为什么 <code>blockMesh</code> 报 Negative volume，不懂残差震荡型发散，不懂 <code>0.orig/</code> 工作流。NullFlux 内置完整 CFD 工程协议、视觉核验闭环和论文复现专用流程，把"懂仿真的工程师"装进对话框。</p>
+    <p class="subhead">Codex、Claude Code 这类通用助手能写代码，但不懂为什么 <code>blockMesh</code> 报 Negative volume，不懂残差震荡型发散，不懂 <code>0.orig/</code> 工作流，更不会判断一个新写的求解器有没有违反守恒。NullFlux 内置完整 CFD 工程协议、视觉核验闭环、论文复现专用流程以及未知求解器开发流水线，把"一位懂仿真的工程师"装进对话框。</p>
+    <div class="pitch-stats">
+      <div class="ps"><div class="ps-num">30+</div><div class="ps-lbl">原子工具</div></div>
+      <div class="ps"><div class="ps-num">M1–M7</div><div class="ps-lbl">阶段工作流</div></div>
+      <div class="ps"><div class="ps-num">L1–L9</div><div class="ps-lbl">BLAME LADDER</div></div>
+      <div class="ps"><div class="ps-num">100%</div><div class="ps-lbl">本地运行</div></div>
+    </div>
   </div>
 </section>
 
@@ -350,7 +402,7 @@ footer .links{display:flex;gap:24px;flex-wrap:wrap}
       <div>
         <div class="tile-eyebrow">任意模型接入</div>
         <h3>选你想要的模型。<br><span class="accent">国产模型 = 性价比之选。</span></h3>
-        <p class="tile-sub">OpenAI &middot; Anthropic &middot; Google &middot; DeepSeek &middot; Kimi &middot; 通义 &middot; GLM &middot; 智谱 &middot; 本地 vLLM —— OpenAI 兼容协议即可接入。在 CFD 工程任务上，国产模型不仅 token 成本仅为 Claude 的 5–10%，效果反而常常更稳，因为 NullFlux 的中文工程协议为它们量身定制。</p>
+        <p class="tile-sub">OpenAI &middot; Anthropic &middot; Google &middot; DeepSeek &middot; Kimi &middot; 通义 &middot; GLM &middot; 智谱 &middot; 本地 vLLM —— 任何 OpenAI 兼容协议都能接。在 CFD 工程任务上，国产模型不仅 token 成本仅为 Claude 的 5–10%，效果反而常常更稳，因为 NullFlux 的中文工程协议为它们量身定制，连求解器 C++ 代码生成都做了针对性提示工程。</p>
       </div>
       <div class="row">
         <span class="pill">OpenAI</span>
@@ -367,15 +419,72 @@ footer .links{display:flex;gap:24px;flex-wrap:wrap}
       <div>
         <div class="tile-eyebrow">仿真专属能力</div>
         <h3>不是会写脚本，<br>是真的<span class="accent">会跑算例</span>。</h3>
-        <p class="tile-sub">7 阶段工作流 (M1→M7) &middot; 9 层 BLAME LADDER 报错排查 &middot; 视觉核验闭环 &middot; 论文参数三遍核对 &middot; 0.orig 工作流 &middot; STL 贴合度采样 &middot; 残差时序流式分析。这些是通用 coding agent 没有的硬协议。</p>
+        <p class="tile-sub">7 阶段工作流 (M1→M7) &middot; 9 层 BLAME LADDER 报错排查 &middot; 视觉核验闭环 &middot; 论文参数三遍核对 &middot; 0.orig 工作流 &middot; STL 贴合度采样 &middot; 残差时序流式分析 &middot; 未知求解器开发流水线。这些是通用 coding agent 没有的硬协议。</p>
       </div>
       <div class="row">
         <span class="pill">OpenFOAM</span>
         <span class="pill">MFIX</span>
         <span class="pill">LBM</span>
+        <span class="pill">SU2</span>
         <span class="pill">ParaView</span>
         <span class="pill">视觉核验</span>
+        <span class="pill">求解器开发</span>
         <span class="pill">贝叶斯优化</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="solver" id="solver">
+  <div class="wrap">
+    <div class="solver-grid">
+      <div class="solver-copy">
+        <div class="eyebrow">未知求解器开发</div>
+        <h2>没人写过的方程，<br>也能<span class="accent">从零跑起来</span>。</h2>
+        <p>大多数 AI 助手只能调用 OpenFOAM 现成求解器。NullFlux 不同 —— 给它一篇论文或一组控制方程，它能为你完整完成新求解器的研发闭环。</p>
+        <p>这条流水线把"科研里最痛的两周"压成"一次对话"。任何小众物理场、改写本构、加源项、换数值格式，都能在工程纪律下落地。</p>
+        <div class="solver-list">
+          <div class="it"><span class="k">STEP 1</span><span class="t"><b>方程推导核对。</b><span>从论文抽控制方程，KaTeX 渲染、量纲一致性自动校验，缺失边界条件主动提问。</span></span></div>
+          <div class="it"><span class="k">STEP 2</span><span class="t"><b>架构选型。</b><span>在 OpenFOAM 上 fork 最近邻求解器，或基于 fvOptions / customLib 起新工程，目录结构、CMakeLists / Make/files 一次写对。</span></span></div>
+          <div class="it"><span class="k">STEP 3</span><span class="t"><b>离散与实现。</b><span>逐项写成 fvm/fvc 表达，源项、本构、湍流闭包逐行注释；同步生成单测样例。</span></span></div>
+          <div class="it"><span class="k">STEP 4</span><span class="t"><b>编译 &amp; 调试。</b><span>wmake / cmake 编译错误按 BLAME LADDER L8 处理：缺头文件、模板特化、链接顺序逐层定位，不许"瞎改 .H"。</span></span></div>
+          <div class="it"><span class="k">STEP 5</span><span class="t"><b>验证。</b><span>Manufactured Solution + 收敛阶测试 + benchmark 算例对比文献。三关都过才算"求解器可用"。</span></span></div>
+        </div>
+      </div>
+      <div class="solver-code">
+        <div class="terminal-head">
+          <div class="dots"><span></span><span></span><span></span></div>
+          <span class="title">myNewSolver.C &middot; auto-generated</span>
+        </div>
+<pre><span class="c">// NullFlux 自动生成：基于论文 (Smith 2024) 推导</span>
+<span class="c">// 方程：∂(αρU)/∂t + ∇·(αρU⊗U) = -∇p + ∇·τ + αρg + S_drag</span>
+
+<span class="k">while</span> (runTime.run())
+{
+    <span class="k">#include</span> <span class="s">"CourantNo.H"</span>
+    <span class="k">#include</span> <span class="s">"setDeltaT.H"</span>
+    runTime++;
+
+    <span class="c">// --- 论文式 (12)：新增非牛顿粘性项 ---</span>
+    <span class="m">volScalarField</span> muEff = mu0 * pow(strainRate + SMALL, n - <span class="m">1.0</span>);
+
+    <span class="k">fvVectorMatrix</span> UEqn
+    (
+        fvm::ddt(alpha, rho, U)
+      + fvm::div(alphaRhoPhi, U)
+      - fvm::laplacian(muEff, U)
+     ==
+        alpha * rho * g
+      + <span class="m">dragModel_</span>->S(U)    <span class="c">// 论文式 (14) 拖曳力</span>
+    );
+
+    UEqn.relax();
+    solve(UEqn == -fvc::grad(p));
+
+    <span class="c">// MMS 收敛阶检查 → 自动写入 validation.log</span>
+    <span class="k">#include</span> <span class="s">"mmsCheck.H"</span>
+}
+<span class="c">// ✓ 编译通过  ✓ MMS 二阶收敛  ✓ benchmark 误差 < 3%</span></pre>
       </div>
     </div>
   </div>
@@ -389,15 +498,18 @@ footer .links{display:flex;gap:24px;flex-wrap:wrap}
       <p class="subhead">30+ 原子工具、7 阶段闭环、9 层报错恢复。每一项都是为了让算例真正跑出来。</p>
     </div>
     <div class="feat-grid">
-      <div class="feat"><div class="icon">🔬</div><h4>OpenFOAM 全流程</h4><p>从 <code>blockMesh</code> / <code>snappyHexMesh</code> 到 setFields、求解器、残差、ParaView 渲染、收敛核验一条龙。</p></div>
-      <div class="feat"><div class="icon">👁️</div><h4>视觉核验闭环</h4><p>VLM 自动检查 STL 法向、网格质量、收敛曲线、云图对称性。算错了模型自己能看出来。</p></div>
-      <div class="feat"><div class="icon">📄</div><h4>论文复现专属协议</h4><p>文献核对三遍 + <code>paper_params.lock.md</code> 宪法锁 + DEVIATION REQUEST 偏离申报，杜绝越改越漂移。</p></div>
-      <div class="feat"><div class="icon">🪜</div><h4>BLAME LADDER L1–L9</h4><p>求解器报错按 9 层阶梯排查：边界 → 网格 → 时间步 → 物理模型 → 数值格式。不许跳级、不许甩锅论文。</p></div>
-      <div class="feat"><div class="icon">🔒</div><h4>本地优先 &middot; 数据不出门</h4><p>case、几何、结果、token 默认全部留在本机。可全程离线（接本地 vLLM / Ollama）。</p></div>
-      <div class="feat"><div class="icon">🧪</div><h4>不止 OpenFOAM</h4><p>颗粒流 MFIX、格子玻尔兹曼 LBM、贝叶斯参数寻优 study 都已内置标准工作流。</p></div>
-      <div class="feat"><div class="icon">📐</div><h4>KaTeX 公式渲染</h4><p>前端实时渲染数学公式，再也不是折行 ASCII 拼出来的伪公式。</p></div>
-      <div class="feat"><div class="icon">✋</div><h4>人在回路（HIL）</h4><p>需要论文图精确数据点？弹手动标注仪，你点几下，结果自动塞回对话上下文。</p></div>
-      <div class="feat"><div class="icon">🌐</div><h4>中文协议优化</h4><p>提示词、错误回复、报告生成全部中文优化。国产模型在这套协议下，仿真任务表现比 GPT-4o / Claude 更稳。</p></div>
+      <div class="feat"><div class="ico-mono">01</div><h4>开源流体力学软件全栈</h4><p>OpenFOAM、MFIX、LBM、SU2 等主流开源 CFD 软件统一驱动：从 <code>blockMesh</code> / <code>snappyHexMesh</code> 到 setFields、求解器、残差、ParaView 渲染、收敛核验一条龙。</p></div>
+      <div class="feat"><div class="ico-mono">02</div><h4>未知求解器开发</h4><p>给一篇论文或一组方程，从零搭脚手架、推离散格式、写 C++ / Python 实现、跑 manufactured solution 验证、再做收敛阶测试。新场新方程不再卡壳。</p></div>
+      <div class="feat"><div class="ico-mono">03</div><h4>视觉核验闭环</h4><p>VLM 自动检查 STL 法向、网格质量、收敛曲线、云图对称性。算错了模型自己能看出来，自动回滚到上一稳定步。</p></div>
+      <div class="feat"><div class="ico-mono">04</div><h4>论文复现专属协议</h4><p>文献核对三遍 + <code>paper_params.lock.md</code> 宪法锁 + DEVIATION REQUEST 偏离申报，杜绝模型越改越漂移、参数越调越像玄学。</p></div>
+      <div class="feat"><div class="ico-mono">05</div><h4>BLAME LADDER L1–L9</h4><p>求解器报错按 9 层阶梯排查：边界 → 网格 → 时间步 → 物理模型 → 数值格式 → 编译器。不许跳级、不许甩锅论文。</p></div>
+      <div class="feat"><div class="ico-mono">06</div><h4>本地优先 · 数据不出门</h4><p>case、几何、结果、token 默认全部留在本机。可全程离线（接本地 vLLM / Ollama / LM Studio），算例不离开你的工作站。</p></div>
+      <div class="feat"><div class="ico-mono">07</div><h4>多物理场扩展</h4><p>颗粒流 MFIX、格子玻尔兹曼 LBM、可压流 SU2、贝叶斯参数寻优 study 都已内置标准工作流，可继续扩展自定义求解链。</p></div>
+      <div class="feat"><div class="ico-mono">08</div><h4>KaTeX 公式渲染</h4><p>前端实时渲染数学公式与张量记号，再也不是折行 ASCII 拼出来的伪公式，方程推导清清楚楚。</p></div>
+      <div class="feat"><div class="ico-mono">09</div><h4>人在回路（HIL）</h4><p>需要论文图精确数据点？弹手动标注仪，你点几下，结果自动塞回对话上下文，模型按你的标注继续推进。</p></div>
+      <div class="feat"><div class="ico-mono">10</div><h4>中文工程协议</h4><p>提示词、错误回复、报告生成全部中文优化。国产模型在这套协议下，仿真任务表现比 GPT-4o / Claude 更稳，token 成本仅 5–10%。</p></div>
+      <div class="feat"><div class="ico-mono">11</div><h4>异步求解器调度</h4><p>长任务后台跑，残差时序流式抓取；发散自动叫停，收敛自动渲染，桌面通知到位。</p></div>
+      <div class="feat"><div class="ico-mono">12</div><h4>工程报告自动生成</h4><p>每个算例自动留下 case-card：参数、网格质量、残差曲线、关键云图与论文图对比，导出即报告。</p></div>
     </div>
   </div>
 </section>
@@ -445,6 +557,7 @@ footer .links{display:flex;gap:24px;flex-wrap:wrap}
           <tr class="highlight"><td>VLM 视觉核验云图 / 网格</td><td class="no">—</td><td class="no">—</td><td class="yes">闭环</td></tr>
           <tr class="highlight"><td>STL 贴合度采样验证</td><td class="no">—</td><td class="no">—</td><td class="yes">原子工具</td></tr>
           <tr class="highlight"><td>论文参数宪法锁（防漂移）</td><td class="no">—</td><td class="no">—</td><td class="yes">paper_params.lock</td></tr>
+          <tr class="highlight"><td>未知求解器从零开发</td><td class="no">—</td><td class="no">—</td><td class="yes">内置流水线</td></tr>
           <tr class="highlight"><td>9 层报错阶梯排查</td><td class="no">—</td><td class="no">—</td><td class="yes">BLAME LADDER</td></tr>
           <tr><td>本地部署 &middot; 数据不外发</td><td class="no">SaaS</td><td class="no">SaaS</td><td class="yes">本机优先</td></tr>
           <tr><td>使用国产模型</td><td class="no">—</td><td class="no">—</td><td class="yes">任意切换</td></tr>
@@ -461,7 +574,7 @@ footer .links{display:flex;gap:24px;flex-wrap:wrap}
     <div class="features-head">
       <div class="eyebrow">三步起飞</div>
       <h2 class="headline">下载、解包、启动。</h2>
-      <p class="subhead">Linux x64 工作站。Windows 用户走 WSL2 即可。</p>
+      <p class="subhead">Linux x64 工作站。Windows 用户走 WSL2 即可。开源 CFD 软件需提前安装（OpenFOAM 推荐 v2306 以上，其他按需）。</p>
     </div>
     <div class="install-grid">
       <div class="terminal">
@@ -489,7 +602,7 @@ footer .links{display:flex;gap:24px;flex-wrap:wrap}
           <li><b>操作系统</b><code>Linux x86_64</code></li>
           <li><b>Node.js</b><code>&ge; 18</code></li>
           <li><b>Python</b><code>&ge; 3.9</code></li>
-          <li><b>OpenFOAM</b><code>v8 / v10 / v2306</code></li>
+          <li><b>流体力学软件</b><code>OF v2306 / MFIX / SU2</code></li>
           <li><b>ParaView</b><code>5.10+ pvpython</code></li>
           <li><b>模型接入</b><code>OpenAI 兼容</code></li>
         </ul>
@@ -554,7 +667,7 @@ footer .links{display:flex;gap:24px;flex-wrap:wrap}
 <section class="final">
   <div class="wrap">
     <h2>把你的 Linux 工作站，<br>变成一位<span class="accent">仿真工程师</span>。</h2>
-    <p>v0.6.0 已上线 &middot; 开箱即用</p>
+    <p>v0.6.1 已上线 &middot; 开箱即用</p>
     <div class="cta-row">
       <a href="https://github.com/LZF1111/nullflux/releases/latest" class="btn btn-primary">立即下载</a>
       <a href="https://github.com/LZF1111/nullflux" class="btn-link">查看 GitHub</a>
