@@ -3,298 +3,473 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>NullFlux — 本地部署的中文 CFD 智能体 · by LZF</title>
-<meta name="description" content="NullFlux 是一个本地部署、原生中文的 AI Agent，专为 CFD / 数值仿真 / 科学计算设计。读论文、写代码、跑 OpenFOAM、调 ParaView，全程对话驱动，数据不出本机。">
-<meta name="keywords" content="CFD, OpenFOAM, MFIX, LBM, ParaView, AI Agent, 中文智能体, 科学计算, 论文复现, LZF">
-<meta property="og:title" content="NullFlux — 本地部署的中文 CFD 智能体">
-<meta property="og:description" content="用国产模型，打穿 OpenFOAM 工程任务 —— 数据不出本机，越用越懂你。">
+<title>NullFlux — 你的本地化 CFD 仿真工程专家</title>
+<meta name="description" content="NullFlux 是一个本地部署的 AI 仿真工程师。不止 coding，更读论文、建网格、跑 OpenFOAM、调 ParaView。任意大模型可接入，国产模型在 CFD 任务上性价比与效果均优于通用 Codex / Claude Code。">
+<meta name="keywords" content="CFD, OpenFOAM, MFIX, LBM, ParaView, AI Agent, 仿真工程, 科学计算, 论文复现, LZF">
+<meta property="og:title" content="NullFlux — 你的本地化 CFD 仿真工程专家">
+<meta property="og:description" content="不止是 coding agent。任意大模型接入，国产模型性价比更高，仿真任务效果优于 Codex / Claude Code。">
 <meta property="og:image" content="screenshot-main.png">
 <meta property="og:type" content="website">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+SC:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
-  --bg:#08090d; --bg2:#0e1018; --bg3:#13161f;
-  --fg:#e7e9ee; --fg-dim:#9aa0ad; --fg-mute:#6b7280;
-  --accent:#7c5cff; --accent2:#22d3ee; --accent3:#f472b6;
-  --line:rgba(255,255,255,.08);
-  --grad:linear-gradient(135deg,#7c5cff 0%,#22d3ee 60%,#f472b6 100%);
+  --bg:#ffffff;
+  --bg-soft:#fbfbfd;
+  --bg-card:#f5f5f7;
+  --bg-dark:#1d1d1f;
+  --fg:#1d1d1f;
+  --fg-dim:#515154;
+  --fg-mute:#86868b;
+  --line:rgba(0,0,0,.08);
+  --line-strong:rgba(0,0,0,.14);
+  --accent:#0066cc;
+  --accent-hover:#0077ed;
+  --radius:18px;
+  --radius-lg:28px;
 }
-html,body{background:var(--bg);color:var(--fg);font-family:'Inter','Noto Sans SC',system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;line-height:1.65;-webkit-font-smoothing:antialiased;overflow-x:hidden}
-code,pre,kbd{font-family:'JetBrains Mono','Fira Code',Consolas,Monaco,monospace}
+html{scroll-behavior:smooth;scroll-padding-top:64px;background:var(--bg)}
+body{
+  background:var(--bg);color:var(--fg);
+  font-family:'Inter','SF Pro Display','SF Pro Text','Noto Sans SC','PingFang SC','Helvetica Neue',Helvetica,Arial,sans-serif;
+  font-weight:400;line-height:1.5;
+  -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;
+  font-feature-settings:"kern","liga","calt";
+}
+code,pre,kbd{font-family:'JetBrains Mono','SF Mono',ui-monospace,Consolas,monospace}
 a{color:inherit;text-decoration:none}
 img{max-width:100%;display:block}
-/* ============ background fx ============ */
-.bg-fx{position:fixed;inset:0;z-index:-1;overflow:hidden;pointer-events:none}
-.bg-fx::before{content:"";position:absolute;width:900px;height:900px;border-radius:50%;left:-200px;top:-300px;background:radial-gradient(circle,rgba(124,92,255,.28),transparent 60%);filter:blur(40px)}
-.bg-fx::after{content:"";position:absolute;width:800px;height:800px;border-radius:50%;right:-250px;top:200px;background:radial-gradient(circle,rgba(34,211,238,.18),transparent 60%);filter:blur(40px)}
-.grid-overlay{position:fixed;inset:0;z-index:-1;background-image:linear-gradient(rgba(255,255,255,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.04) 1px,transparent 1px);background-size:48px 48px;mask-image:radial-gradient(ellipse at 50% 0%,#000 0%,transparent 70%);-webkit-mask-image:radial-gradient(ellipse at 50% 0%,#000 0%,transparent 70%)}
-/* ============ container ============ */
-.container{max-width:1180px;margin:0 auto;padding:0 24px}
-.section{padding:96px 0}
-.section-title{font-size:36px;font-weight:800;letter-spacing:-0.02em;margin-bottom:14px;font-family:'Noto Sans SC',Inter,sans-serif}
-.section-sub{color:var(--fg-dim);font-size:16px;max-width:680px;margin-bottom:48px}
-/* ============ nav ============ */
-nav.top{position:sticky;top:0;z-index:50;background:rgba(8,9,13,.72);backdrop-filter:blur(14px);border-bottom:1px solid var(--line)}
-nav.top .inner{display:flex;align-items:center;justify-content:space-between;height:64px}
-.brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:18px;letter-spacing:-0.01em}
-.brand .logo{width:30px;height:30px;border-radius:8px;background:var(--grad);display:grid;place-items:center;font-weight:900;font-size:14px;color:#0a0b10;font-family:'JetBrains Mono',monospace}
-.brand b{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent}
+
+/* nav */
+nav.top{
+  position:sticky;top:0;z-index:100;
+  background:rgba(255,255,255,.72);
+  backdrop-filter:saturate(180%) blur(20px);
+  -webkit-backdrop-filter:saturate(180%) blur(20px);
+  border-bottom:1px solid var(--line);
+  height:48px;
+}
+nav.top .inner{display:flex;align-items:center;justify-content:space-between;height:100%;max-width:1080px;margin:0 auto;padding:0 22px}
+.brand{display:flex;align-items:center;gap:8px;font-weight:600;font-size:17px;letter-spacing:-0.01em;color:var(--fg)}
+.brand .logo{
+  width:26px;height:26px;border-radius:7px;background:var(--fg);
+  display:grid;place-items:center;font-weight:700;font-size:13px;color:#fff;
+  letter-spacing:-0.02em;
+}
 .nav-links{display:flex;gap:28px;align-items:center}
-.nav-links a{color:var(--fg-dim);font-size:14.5px;font-weight:500;transition:color .15s}
+.nav-links a{color:var(--fg-dim);font-size:13px;font-weight:400;transition:color .2s}
 .nav-links a:hover{color:var(--fg)}
-.nav-cta{padding:8px 16px;border-radius:8px;background:rgba(124,92,255,.12);border:1px solid rgba(124,92,255,.35);color:#c9beff!important;font-weight:600;transition:all .2s}
-.nav-cta:hover{background:rgba(124,92,255,.22);transform:translateY(-1px)}
-@media (max-width:720px){.nav-links a:not(.nav-cta){display:none}}
-/* ============ hero ============ */
-.hero{padding:96px 0 80px;text-align:center;position:relative}
-.badge-row{display:flex;justify-content:center;gap:8px;flex-wrap:wrap;margin-bottom:28px}
-.badge{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:999px;background:rgba(255,255,255,.04);border:1px solid var(--line);font-size:12.5px;color:var(--fg-dim);font-weight:500}
-.badge.live{color:#34d399;border-color:rgba(52,211,153,.3);background:rgba(52,211,153,.08)}
-.badge.live::before{content:"";width:6px;height:6px;border-radius:50%;background:#34d399;box-shadow:0 0 0 4px rgba(52,211,153,.18);animation:pulse 2s infinite}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
-h1.title{font-family:'Noto Sans SC',Inter,sans-serif;font-size:clamp(48px,7vw,84px);line-height:1.05;letter-spacing:-0.03em;font-weight:900;margin-bottom:24px}
-h1.title .gradient{background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;display:inline-block}
-.tag{font-size:clamp(17px,2vw,21px);color:var(--fg-dim);max-width:760px;margin:0 auto 14px;font-weight:400}
-.tag b{color:#e7e9ee;font-weight:600}
-.author{font-size:14px;color:var(--fg-mute);margin-bottom:36px;letter-spacing:.02em}
-.cta-row{display:flex;justify-content:center;gap:14px;flex-wrap:wrap;margin-bottom:48px}
-.btn{padding:14px 24px;border-radius:10px;font-weight:600;font-size:15px;transition:all .2s;display:inline-flex;align-items:center;gap:8px;cursor:pointer;border:none;font-family:inherit}
-.btn-primary{background:var(--grad);color:#0a0b10;box-shadow:0 8px 24px rgba(124,92,255,.35)}
-.btn-primary:hover{transform:translateY(-2px);box-shadow:0 12px 32px rgba(124,92,255,.5)}
-.btn-secondary{background:rgba(255,255,255,.05);color:var(--fg);border:1px solid var(--line)}
-.btn-secondary:hover{background:rgba(255,255,255,.09);border-color:rgba(255,255,255,.18)}
-.hero-stat{display:flex;justify-content:center;gap:48px;flex-wrap:wrap;margin-top:8px;color:var(--fg-dim);font-size:14px}
-.hero-stat b{color:#e7e9ee;font-weight:700;font-size:22px;font-family:'JetBrains Mono',monospace;display:block;margin-bottom:2px}
-/* ============ screenshot ============ */
-.shot-wrap{margin:60px auto 0;max-width:1100px;position:relative;padding:8px;border-radius:18px;background:linear-gradient(180deg,rgba(124,92,255,.4),rgba(34,211,238,.15) 40%,transparent);box-shadow:0 30px 80px -20px rgba(124,92,255,.25)}
-.shot-wrap img{border-radius:12px;border:1px solid rgba(255,255,255,.08)}
-.shot-caption{margin-top:18px;color:var(--fg-mute);font-size:13px;text-align:center}
-/* ============ features ============ */
-.features{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px}
-.f-card{padding:28px 26px;border-radius:14px;background:linear-gradient(180deg,rgba(255,255,255,.025),rgba(255,255,255,.01));border:1px solid var(--line);transition:all .25s;position:relative;overflow:hidden}
-.f-card:hover{transform:translateY(-3px);border-color:rgba(124,92,255,.35);box-shadow:0 16px 40px -16px rgba(124,92,255,.3)}
-.f-card .ic{width:42px;height:42px;border-radius:10px;background:rgba(124,92,255,.12);display:grid;place-items:center;margin-bottom:16px;font-size:22px}
-.f-card h3{font-size:17px;font-weight:700;margin-bottom:8px;letter-spacing:-0.01em}
-.f-card p{font-size:14.5px;color:var(--fg-dim);line-height:1.65}
-.f-card.purple .ic{background:rgba(124,92,255,.15);color:#c9beff}
-.f-card.cyan .ic{background:rgba(34,211,238,.15);color:#67e8f9}
-.f-card.pink .ic{background:rgba(244,114,182,.15);color:#fbcfe8}
-.f-card.amber .ic{background:rgba(251,191,36,.15);color:#fde68a}
-.f-card.green .ic{background:rgba(52,211,153,.15);color:#86efac}
-.f-card.red   .ic{background:rgba(248,113,113,.15);color:#fca5a5}
-/* ============ workflow timeline ============ */
-.workflow{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-top:8px}
-.wf-step{padding:22px 20px;border-radius:12px;background:rgba(255,255,255,.025);border:1px solid var(--line);position:relative}
-.wf-step .num{font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--accent);font-weight:700;margin-bottom:8px;letter-spacing:.05em}
-.wf-step h4{font-size:15.5px;font-weight:700;margin-bottom:6px}
-.wf-step p{font-size:13.5px;color:var(--fg-dim);line-height:1.6}
-/* ============ install ============ */
-.install-grid{display:grid;grid-template-columns:1fr 1fr;gap:32px;align-items:start}
-@media (max-width:880px){.install-grid{grid-template-columns:1fr}}
-.code-block{background:#0a0c12;border:1px solid var(--line);border-radius:12px;overflow:hidden}
-.code-head{display:flex;align-items:center;justify-content:space-between;padding:10px 16px;background:rgba(255,255,255,.025);border-bottom:1px solid var(--line);font-size:12.5px;color:var(--fg-mute)}
-.code-head .dots{display:flex;gap:6px}
-.code-head .dots span{width:10px;height:10px;border-radius:50%;background:#3a3d47}
-.code-head .dots span:nth-child(1){background:#ff5f56}
-.code-head .dots span:nth-child(2){background:#ffbd2e}
-.code-head .dots span:nth-child(3){background:#27c93f}
-.code-block pre{padding:18px 20px;font-size:13.5px;line-height:1.75;overflow-x:auto;color:#d6d9e1}
-.code-block pre .c{color:#6b7280}
-.code-block pre .k{color:#c9beff}
-.code-block pre .s{color:#86efac}
-.code-block pre .v{color:#fbcfe8}
-.req{padding:24px;border-radius:12px;background:rgba(255,255,255,.025);border:1px solid var(--line)}
-.req h4{font-size:15px;font-weight:700;margin-bottom:14px;color:#c9beff}
-.req ul{list-style:none}
-.req li{padding:8px 0;font-size:14px;color:var(--fg-dim);border-bottom:1px dashed var(--line)}
-.req li:last-child{border-bottom:none}
-.req li code{padding:1px 6px;border-radius:4px;background:rgba(124,92,255,.12);color:#c9beff;font-size:12.5px}
-/* ============ stats ============ */
-.stats-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:1px;background:var(--line);border-radius:14px;overflow:hidden;border:1px solid var(--line)}
-.stat-cell{padding:32px 24px;background:var(--bg);text-align:center}
-.stat-cell .v{font-family:'JetBrains Mono',monospace;font-size:32px;font-weight:700;background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent;margin-bottom:6px}
-.stat-cell .l{font-size:13px;color:var(--fg-dim)}
-/* ============ faq ============ */
-.faq{max-width:820px;margin:0 auto}
-.faq-item{border:1px solid var(--line);border-radius:12px;margin-bottom:12px;overflow:hidden;background:rgba(255,255,255,.015)}
-.faq-item summary{padding:18px 22px;cursor:pointer;font-weight:600;font-size:15.5px;list-style:none;display:flex;justify-content:space-between;align-items:center;transition:background .15s}
+.nav-links a.cta{color:var(--accent);font-weight:500}
+@media (max-width:760px){.nav-links a:not(.cta){display:none}}
+
+/* layout */
+.wrap{max-width:1080px;margin:0 auto;padding:0 22px}
+section{padding:120px 0;position:relative}
+.eyebrow{
+  font-size:13px;font-weight:500;letter-spacing:.02em;
+  color:var(--accent);margin-bottom:14px;
+}
+.headline{
+  font-family:'SF Pro Display',Inter,'Noto Sans SC',sans-serif;
+  font-weight:600;letter-spacing:-0.025em;line-height:1.07;
+  color:var(--fg);
+}
+.subhead{
+  color:var(--fg-dim);font-weight:400;line-height:1.5;letter-spacing:-0.01em;
+}
+
+/* hero */
+.hero{padding:80px 0 0;text-align:center;background:var(--bg)}
+.hero h1{
+  font-size:clamp(44px,6.4vw,80px);
+  font-weight:600;letter-spacing:-0.03em;line-height:1.05;
+  margin-bottom:22px;color:var(--fg);
+  font-family:'SF Pro Display',Inter,'Noto Sans SC',sans-serif;
+}
+.hero h1 .accent{color:var(--accent)}
+.hero .lede{
+  font-size:clamp(20px,2.3vw,28px);
+  color:var(--fg-dim);max-width:780px;margin:0 auto 12px;
+  font-weight:400;letter-spacing:-0.01em;line-height:1.35;
+}
+.hero .author{font-size:15px;color:var(--fg-mute);margin-top:24px;margin-bottom:36px}
+.cta-row{display:flex;justify-content:center;gap:20px;flex-wrap:wrap;margin-bottom:18px}
+.btn{
+  padding:13px 24px;border-radius:980px;
+  font-weight:500;font-size:15px;letter-spacing:-0.01em;
+  transition:all .2s cubic-bezier(.4,0,.2,1);
+  display:inline-flex;align-items:center;gap:6px;cursor:pointer;
+  border:none;font-family:inherit;
+}
+.btn-primary{background:var(--accent);color:#fff}
+.btn-primary:hover{background:var(--accent-hover)}
+.btn-link{color:var(--accent);padding:13px 8px;font-size:15px;font-weight:500}
+.btn-link:hover{text-decoration:underline}
+.btn-link::after{content:" \203A";margin-left:2px;font-weight:400}
+
+/* device shot */
+.device{margin:80px auto 0;max-width:980px;padding:0 22px}
+.device-frame{
+  background:var(--bg-card);border-radius:var(--radius-lg);padding:14px;
+  box-shadow:0 30px 60px -20px rgba(0,0,0,.18), 0 1px 0 rgba(255,255,255,.6) inset;
+}
+.device-frame img,.device-frame video{
+  border-radius:18px;display:block;width:100%;
+  border:1px solid rgba(0,0,0,.06);
+}
+.device-frame video{background:#000}
+.device-caption{text-align:center;color:var(--fg-mute);font-size:13px;margin-top:18px}
+
+/* pitch */
+.pitch{background:var(--bg);padding:140px 0 80px;text-align:center}
+.pitch h2{font-size:clamp(34px,4.2vw,56px);max-width:880px;margin:0 auto 20px}
+.pitch p.subhead{font-size:clamp(18px,1.9vw,22px);max-width:760px;margin:0 auto}
+.pitch code{font-size:.85em;background:var(--bg-card);padding:1px 6px;border-radius:5px}
+
+/* tiles */
+.tiles{padding:24px 0 60px;background:var(--bg)}
+.tiles-grid{
+  display:grid;grid-template-columns:1fr 1fr;gap:24px;
+  max-width:1280px;margin:0 auto;padding:0 22px;
+}
+@media (max-width:880px){.tiles-grid{grid-template-columns:1fr}}
+.tile{
+  background:var(--bg-card);border-radius:var(--radius-lg);
+  padding:56px 48px;min-height:520px;
+  display:flex;flex-direction:column;justify-content:space-between;
+  position:relative;overflow:hidden;
+}
+.tile.dark{background:var(--bg-dark);color:#f5f5f7}
+.tile.dark .tile-eyebrow{color:#86868b}
+.tile.dark h3{color:#fff}
+.tile.dark .tile-sub{color:#a1a1a6}
+.tile-eyebrow{font-size:13px;font-weight:500;color:var(--accent);margin-bottom:12px}
+.tile h3{
+  font-family:'SF Pro Display',Inter,sans-serif;
+  font-size:clamp(28px,3vw,40px);font-weight:600;letter-spacing:-0.02em;
+  line-height:1.12;margin-bottom:14px;
+}
+.tile h3 .accent{color:var(--accent)}
+.tile.dark h3 .accent{color:#7ec0ff}
+.tile-sub{color:var(--fg-dim);font-size:17px;line-height:1.5;max-width:480px;margin-bottom:28px}
+.tile .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.tile .pill{
+  background:rgba(0,0,0,.06);padding:8px 14px;border-radius:980px;
+  font-size:13px;font-weight:500;color:var(--fg);
+}
+.tile.dark .pill{background:rgba(255,255,255,.08);color:#fff}
+.tile .pill.hi{background:rgba(0,102,204,.12);color:var(--accent)}
+
+/* features */
+.features-section{background:var(--bg-soft);padding:120px 0}
+.features-head{text-align:center;margin-bottom:64px}
+.features-head h2{font-size:clamp(34px,4vw,52px);margin-bottom:14px;max-width:780px;margin-left:auto;margin-right:auto}
+.features-head p.subhead{font-size:clamp(17px,1.7vw,20px);max-width:680px;margin:0 auto}
+.feat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+@media (max-width:980px){.feat-grid{grid-template-columns:repeat(2,1fr)}}
+@media (max-width:620px){.feat-grid{grid-template-columns:1fr}}
+.feat{
+  background:#fff;border-radius:var(--radius);padding:32px 30px;
+  border:1px solid var(--line);
+  transition:transform .25s cubic-bezier(.4,0,.2,1), box-shadow .25s;
+}
+.feat:hover{transform:translateY(-3px);box-shadow:0 16px 40px -16px rgba(0,0,0,.12)}
+.feat .icon{
+  width:42px;height:42px;border-radius:11px;background:var(--bg-card);
+  display:grid;place-items:center;font-size:22px;margin-bottom:18px;
+}
+.feat h4{font-size:17px;font-weight:600;letter-spacing:-0.01em;margin-bottom:8px;color:var(--fg)}
+.feat p{font-size:14.5px;color:var(--fg-dim);line-height:1.55}
+.feat code{font-size:12.5px;background:var(--bg-card);padding:1px 6px;border-radius:5px;color:var(--fg)}
+
+/* workflow */
+.workflow{background:var(--bg-dark);color:#f5f5f7;padding:120px 0}
+.workflow .features-head h2{color:#fff}
+.workflow .features-head p.subhead{color:#a1a1a6}
+.wf-grid{
+  display:grid;grid-template-columns:repeat(4,1fr);gap:1px;
+  background:rgba(255,255,255,.1);border-radius:var(--radius);overflow:hidden;
+  border:1px solid rgba(255,255,255,.1);
+}
+@media (max-width:960px){.wf-grid{grid-template-columns:repeat(2,1fr)}}
+@media (max-width:520px){.wf-grid{grid-template-columns:1fr}}
+.wf{padding:32px 26px;background:var(--bg-dark);min-height:160px}
+.wf .num{
+  font-family:'JetBrains Mono','SF Mono',monospace;font-size:12px;
+  color:#7ec0ff;font-weight:500;letter-spacing:.06em;margin-bottom:10px;
+}
+.wf h5{font-size:17px;font-weight:600;color:#fff;margin-bottom:6px;letter-spacing:-0.01em}
+.wf p{font-size:13.5px;color:#a1a1a6;line-height:1.55}
+
+/* comparison */
+.compare{background:var(--bg);padding:140px 0}
+.compare-card{background:var(--bg-card);border-radius:var(--radius-lg);padding:48px;max-width:1000px;margin:0 auto}
+.compare-table{width:100%;border-collapse:collapse;font-size:15px}
+.compare-table th,.compare-table td{padding:18px 14px;text-align:left;border-bottom:1px solid var(--line)}
+.compare-table th{font-weight:600;font-size:14px;color:var(--fg-mute);border-bottom:1px solid var(--line-strong)}
+.compare-table th:nth-child(n+2),.compare-table td:nth-child(n+2){text-align:center;width:140px}
+.compare-table td:first-child{font-weight:500;color:var(--fg)}
+.compare-table .yes{color:#1d8a3a;font-weight:600}
+.compare-table .no{color:#86868b}
+.compare-table .partial{color:#b85a00;font-weight:500}
+.compare-table tr.highlight td{background:rgba(0,102,204,.04)}
+.compare-table th.us{color:var(--accent);font-weight:600}
+.compare-note{margin-top:18px;font-size:13px;color:var(--fg-mute);text-align:center;line-height:1.6}
+@media (max-width:680px){.compare-card{padding:24px}.compare-table{font-size:13px}.compare-table th,.compare-table td{padding:12px 8px}}
+
+/* install */
+.install{background:var(--bg-soft);padding:120px 0}
+.install-grid{display:grid;grid-template-columns:1.4fr 1fr;gap:32px;align-items:start;max-width:1080px;margin:0 auto}
+@media (max-width:900px){.install-grid{grid-template-columns:1fr}}
+.terminal{
+  background:#1d1d1f;border-radius:var(--radius);overflow:hidden;
+  box-shadow:0 20px 50px -16px rgba(0,0,0,.25);
+}
+.terminal-head{
+  display:flex;align-items:center;padding:12px 16px;
+  background:#2c2c2e;border-bottom:1px solid rgba(255,255,255,.06);
+}
+.terminal-head .dots{display:flex;gap:7px;margin-right:14px}
+.terminal-head .dots span{width:12px;height:12px;border-radius:50%;background:#5a5a5e}
+.terminal-head .dots span:nth-child(1){background:#fc5753}
+.terminal-head .dots span:nth-child(2){background:#fdbc40}
+.terminal-head .dots span:nth-child(3){background:#33c648}
+.terminal-head .title{color:#a1a1a6;font-size:12px;font-family:'JetBrains Mono',monospace}
+.terminal pre{padding:22px 24px;font-size:13.5px;line-height:1.85;color:#f5f5f7;overflow-x:auto}
+.terminal pre .c{color:#86868b}
+.terminal pre .k{color:#7ec0ff}
+.terminal pre .s{color:#9fdf9f}
+.req-card{background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:30px 28px}
+.req-card h4{font-size:15px;font-weight:600;margin-bottom:18px;color:var(--fg)}
+.req-card ul{list-style:none}
+.req-card li{
+  font-size:14px;color:var(--fg-dim);padding:10px 0;
+  border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:12px;
+}
+.req-card li:last-child{border-bottom:none}
+.req-card li b{color:var(--fg);font-weight:500}
+.req-card li code{font-size:12.5px;background:var(--bg-card);padding:2px 7px;border-radius:5px;color:var(--fg)}
+
+/* faq */
+.faq-section{background:var(--bg);padding:120px 0}
+.faq{max-width:780px;margin:0 auto}
+.faq-item{border-bottom:1px solid var(--line)}
+.faq-item summary{
+  padding:24px 0;cursor:pointer;font-weight:500;font-size:18px;letter-spacing:-0.01em;
+  list-style:none;display:flex;justify-content:space-between;align-items:center;
+  color:var(--fg);transition:color .15s;
+}
 .faq-item summary::-webkit-details-marker{display:none}
-.faq-item summary::after{content:"+";font-size:22px;color:var(--fg-mute);transition:transform .2s}
+.faq-item summary::after{
+  content:"+";font-size:24px;color:var(--fg-mute);font-weight:300;
+  transition:transform .25s, color .15s;
+}
 .faq-item[open] summary::after{transform:rotate(45deg);color:var(--accent)}
-.faq-item summary:hover{background:rgba(255,255,255,.025)}
-.faq-item .ans{padding:0 22px 20px;color:var(--fg-dim);font-size:14.5px;line-height:1.7}
-.faq-item .ans code{padding:1px 6px;border-radius:4px;background:rgba(124,92,255,.12);color:#c9beff;font-size:12.5px;font-family:'JetBrains Mono',monospace}
-/* ============ final cta ============ */
-.final-cta{text-align:center;padding:100px 24px;border-radius:24px;background:linear-gradient(135deg,rgba(124,92,255,.12),rgba(34,211,238,.06));border:1px solid rgba(124,92,255,.25);margin:48px 0;position:relative;overflow:hidden}
-.final-cta::before{content:"";position:absolute;inset:0;background:radial-gradient(circle at 30% 0%,rgba(124,92,255,.25),transparent 60%);pointer-events:none}
-.final-cta h2{font-size:clamp(32px,5vw,52px);font-weight:900;font-family:'Noto Sans SC',sans-serif;margin-bottom:16px;letter-spacing:-0.02em;position:relative}
-.final-cta p{font-size:17px;color:var(--fg-dim);margin-bottom:32px;max-width:560px;margin-left:auto;margin-right:auto;position:relative}
-/* ============ footer ============ */
-footer{padding:48px 0 60px;border-top:1px solid var(--line);color:var(--fg-mute);font-size:13.5px}
-footer .row{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:16px}
+.faq-item summary:hover{color:var(--accent)}
+.faq-item .ans{padding:0 0 24px;color:var(--fg-dim);font-size:15.5px;line-height:1.65;max-width:680px}
+.faq-item .ans code{font-size:13px;background:var(--bg-card);padding:1px 6px;border-radius:5px;color:var(--fg)}
+.faq-item .ans a{color:var(--accent)}
+.faq-item .ans a:hover{text-decoration:underline}
+
+/* demo */
+.demo-section{background:var(--bg-soft);padding:120px 0}
+.demo-section .features-head{margin-bottom:48px}
+
+/* final */
+.final{padding:140px 0;background:var(--bg);text-align:center}
+.final h2{
+  font-size:clamp(36px,5vw,64px);font-weight:600;letter-spacing:-0.025em;
+  line-height:1.07;margin-bottom:20px;
+  font-family:'SF Pro Display',Inter,'Noto Sans SC',sans-serif;
+}
+.final h2 .accent{color:var(--accent)}
+.final p{font-size:21px;color:var(--fg-dim);margin-bottom:36px;letter-spacing:-0.01em}
+
+/* footer */
+footer{padding:48px 0 56px;background:var(--bg-soft);border-top:1px solid var(--line);color:var(--fg-mute);font-size:12.5px}
+footer .row{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:18px;max-width:1080px;margin:0 auto;padding:0 22px}
 footer a{color:var(--fg-dim);transition:color .15s}
 footer a:hover{color:var(--fg)}
-footer .links{display:flex;gap:24px}
-/* ============ misc ============ */
-::selection{background:rgba(124,92,255,.45);color:#fff}
-html{scroll-behavior:smooth;scroll-padding-top:80px}
+footer .links{display:flex;gap:24px;flex-wrap:wrap}
+
+::selection{background:rgba(0,102,204,.18);color:var(--fg)}
 </style>
 </head>
 <body>
-<div class="bg-fx"></div>
-<div class="grid-overlay"></div>
 
 <nav class="top">
-  <div class="container inner">
+  <div class="inner">
     <a href="#top" class="brand">
       <span class="logo">N</span>
-      <span>Null<b>𝑭𝒍𝒖𝒙</b></span>
+      <span>NullFlux</span>
     </a>
     <div class="nav-links">
+      <a href="#pitch">概述</a>
       <a href="#features">特性</a>
-      <a href="#workflow">工作流</a>
+      <a href="#compare">对比</a>
       <a href="#install">安装</a>
-      <a href="#faq">FAQ</a>
-      <a href="https://github.com/LZF1111/nullflux" class="nav-cta">★ GitHub</a>
+      <a href="#faq">常见问题</a>
+      <a href="https://github.com/LZF1111/nullflux" class="cta">GitHub &rsaquo;</a>
     </div>
   </div>
 </nav>
 
 <section class="hero" id="top">
-  <div class="container">
-    <div class="badge-row">
-      <span class="badge live">v0.6.0 已发布</span>
-      <span class="badge">Linux x64</span>
-      <span class="badge">Node ≥ 18</span>
-      <span class="badge">本地优先 · 数据不出本机</span>
-    </div>
-    <h1 class="title">
-      不止是 coding agent，<br>
-      更是你的<span class="gradient">仿真工程专家</span>
-    </h1>
-    <p class="tag"><b>NullFlux</b> 不只会写代码 —— 它读论文、建网格、跑求解、调边界、看云图、判收敛，</p>
-    <p class="tag">把一个 <b>CFD 工程师的完整大脑</b>，本地化部署在你的工作站上。</p>
-    <p class="author">OpenFOAM · MFIX · LBM · ParaView —— 全程中文对话驱动，by <b style="color:#c9beff">LZF</b></p>
+  <div class="wrap">
+    <div class="eyebrow">v0.6.0 &middot; 本地部署 &middot; Linux x64</div>
+    <h1>不止是 coding agent。<br>是你的<span class="accent">仿真工程专家</span>。</h1>
+    <p class="lede">读论文 &middot; 建网格 &middot; 跑 OpenFOAM &middot; 调 ParaView &middot; 看云图 &middot; 判收敛</p>
+    <p class="lede">一个对话框，搞定整条 CFD 工作流。</p>
+    <p class="author">by LZF &middot; 任意大模型可接入</p>
     <div class="cta-row">
-      <a href="https://github.com/LZF1111/nullflux/releases/latest" class="btn btn-primary">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-        下载 v0.6.0 (Linux)
-      </a>
-      <a href="https://github.com/LZF1111/nullflux" class="btn btn-secondary">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 .3a12 12 0 0 0-3.8 23.4c.6.1.8-.3.8-.6v-2c-3.3.7-4-1.6-4-1.6-.6-1.4-1.4-1.8-1.4-1.8-1.1-.8.1-.7.1-.7 1.2.1 1.9 1.3 1.9 1.3 1.1 1.9 2.9 1.3 3.6 1 .1-.8.4-1.3.8-1.6-2.7-.3-5.5-1.3-5.5-6 0-1.3.5-2.4 1.2-3.2-.1-.4-.6-1.5.1-3.2 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0c2.3-1.5 3.3-1.2 3.3-1.2.7 1.7.2 2.8.1 3.2.8.8 1.2 1.9 1.2 3.2 0 4.6-2.8 5.7-5.5 6 .5.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A12 12 0 0 0 12 .3"/></svg>
-        ★ Star on GitHub
-      </a>
+      <a href="https://github.com/LZF1111/nullflux/releases/latest" class="btn btn-primary">立即下载</a>
+      <a href="#features" class="btn-link">了解更多</a>
     </div>
-    <div class="hero-stat">
-      <div><b>30+</b><span>专用工具调用</span></div>
-      <div><b>7</b><span>阶段验证闭环</span></div>
-      <div><b>9</b><span>层 BLAME LADDER</span></div>
-      <div><b>100%</b><span>本地推理可选</span></div>
+  </div>
+  <div class="device">
+    <div class="device-frame">
+      <img src="screenshot-main.png" alt="NullFlux 主界面">
     </div>
-    <div class="shot-wrap">
-      <img src="screenshot-main.png" alt="NullFlux 主界面 — OpenFOAM 圆柱绕流算例">
-    </div>
-    <p class="shot-caption">主界面：左侧资源管理器 · 中部 ParaView 渲染 + 终端 · 右侧多轮对话 + 工具调用卡片</p>
+    <p class="device-caption">主界面 &middot; 左侧资源管理器 &middot; 中部 ParaView 渲染 + 终端 &middot; 右侧多轮对话与工具调用</p>
   </div>
 </section>
 
-<section class="section" id="features">
-  <div class="container">
-    <h2 class="section-title">为什么是 NullFlux？</h2>
-    <p class="section-sub">不是又一个写代码的 chatbot —— 是真的会动手干完整个 CFD 任务链的智能体。</p>
-    <div class="features">
-      <div class="f-card purple">
-        <div class="ic">🇨🇳</div>
-        <h3>原生中文 · 跑国产模型</h3>
-        <p>提示词、协议、错误回复全部中文优化。后端可接 DeepSeek / Kimi / 通义 / GLM / 智谱 / 本地 vLLM，多模型热切换。</p>
+<section class="pitch" id="pitch">
+  <div class="wrap">
+    <div class="eyebrow">为什么是 NullFlux</div>
+    <h2 class="headline">通用代码 Agent 写得了脚本，<br>却跑不通一个仿真。</h2>
+    <p class="subhead">Codex、Claude Code 这类通用助手能写代码，但不懂为什么 <code>blockMesh</code> 报 Negative volume，不懂残差震荡型发散，不懂 <code>0.orig/</code> 工作流。NullFlux 内置完整 CFD 工程协议、视觉核验闭环和论文复现专用流程，把"懂仿真的工程师"装进对话框。</p>
+  </div>
+</section>
+
+<section class="tiles">
+  <div class="tiles-grid">
+    <div class="tile">
+      <div>
+        <div class="tile-eyebrow">任意模型接入</div>
+        <h3>选你想要的模型。<br><span class="accent">国产模型 = 性价比之选。</span></h3>
+        <p class="tile-sub">OpenAI &middot; Anthropic &middot; Google &middot; DeepSeek &middot; Kimi &middot; 通义 &middot; GLM &middot; 智谱 &middot; 本地 vLLM —— OpenAI 兼容协议即可接入。在 CFD 工程任务上，国产模型不仅 token 成本仅为 Claude 的 5–10%，效果反而常常更稳，因为 NullFlux 的中文工程协议为它们量身定制。</p>
       </div>
-      <div class="f-card cyan">
-        <div class="ic">🔬</div>
-        <h3>OpenFOAM 全流程</h3>
-        <p>从 <code>blockMesh</code> / <code>snappyHexMesh</code> 网格生成、setFields 初始场、求解器选型，到残差监控、ParaView 渲染、收敛核验一条龙。</p>
+      <div class="row">
+        <span class="pill">OpenAI</span>
+        <span class="pill">Anthropic</span>
+        <span class="pill">Gemini</span>
+        <span class="pill hi">DeepSeek</span>
+        <span class="pill hi">Kimi</span>
+        <span class="pill hi">Qwen</span>
+        <span class="pill hi">GLM</span>
+        <span class="pill">vLLM</span>
       </div>
-      <div class="f-card pink">
-        <div class="ic">👁️</div>
-        <h3>视觉核验闭环</h3>
-        <p>VLM 高清细看：检查 STL 法向 / 网格质量 / 收敛曲线 / 云图对称性。<code>foam_geom_verify</code> · <code>foam_mesh_verify</code> · <code>foam_solve_verify</code>。</p>
+    </div>
+    <div class="tile dark">
+      <div>
+        <div class="tile-eyebrow">仿真专属能力</div>
+        <h3>不是会写脚本，<br>是真的<span class="accent">会跑算例</span>。</h3>
+        <p class="tile-sub">7 阶段工作流 (M1→M7) &middot; 9 层 BLAME LADDER 报错排查 &middot; 视觉核验闭环 &middot; 论文参数三遍核对 &middot; 0.orig 工作流 &middot; STL 贴合度采样 &middot; 残差时序流式分析。这些是通用 coding agent 没有的硬协议。</p>
       </div>
-      <div class="f-card amber">
-        <div class="ic">📄</div>
-        <h3>论文复现专属协议</h3>
-        <p><b>文献核对三遍铁律</b> + <code>paper_params.lock.md</code> 宪法锁 + DEVIATION REQUEST 偏离申报，杜绝越改越漂移。</p>
-      </div>
-      <div class="f-card red">
-        <div class="ic">🪜</div>
-        <h3>BLAME LADDER L1–L9</h3>
-        <p>求解器报错按 9 层阶梯排查：边界 → 网格 → 时间步 → 物理模型 → 数值格式 → … 不许跳级、不许甩锅论文。</p>
-      </div>
-      <div class="f-card green">
-        <div class="ic">🔒</div>
-        <h3>本地优先 · 数据不出门</h3>
-        <p>所有 case、几何、结果、token 默认留在本机。可全程离线（接本地模型）。封装混淆发行，反编译需专业逆向。</p>
-      </div>
-      <div class="f-card purple">
-        <div class="ic">🧪</div>
-        <h3>MFIX · LBM · OPT</h3>
-        <p>不止 OpenFOAM。颗粒流（MFIX）、格子玻尔兹曼（LBM）、参数寻优（贝叶斯优化 study）都内置工作流。</p>
-      </div>
-      <div class="f-card cyan">
-        <div class="ic">📐</div>
-        <h3>KaTeX 公式渲染</h3>
-        <p>前端实时渲染 <code>$\nabla \cdot \boldsymbol{u} = 0$</code> 一类数学公式，再也不是难看的折行 ASCII。</p>
-      </div>
-      <div class="f-card pink">
-        <div class="ic">✋</div>
-        <h3>人在回路（HIL）</h3>
-        <p>需要精确数据点时，弹手动标注仪（类 WebPlotDigitizer），你点几下，结果自动塞回对话。</p>
+      <div class="row">
+        <span class="pill">OpenFOAM</span>
+        <span class="pill">MFIX</span>
+        <span class="pill">LBM</span>
+        <span class="pill">ParaView</span>
+        <span class="pill">视觉核验</span>
+        <span class="pill">贝叶斯优化</span>
       </div>
     </div>
   </div>
 </section>
 
-<section class="section" id="workflow" style="padding-top:40px">
-  <div class="container">
-    <h2 class="section-title">M1 → M7 · 标准化 CFD 工作流</h2>
-    <p class="section-sub">不是"想哪写哪"。NullFlux 把 OpenFOAM 任务拆成 7 个阶段，每阶段必须通过 <code style="color:#c9beff;background:rgba(124,92,255,.12);padding:1px 6px;border-radius:4px;font-family:'JetBrains Mono',monospace;font-size:12.5px">*_verify</code> 视觉核验才能进下一步。</p>
-    <div class="workflow">
-      <div class="wf-step"><div class="num">M1 · GEOM</div><h4>几何与单位</h4><p>STL 检查、单位核对、法向 / 封闭性 VLM 体检。</p></div>
-      <div class="wf-step"><div class="num">M2 · PLAN</div><h4>方案与参数</h4><p>论文参数提取 + 三遍核对 + 锁定到 <code>paper_params.lock.md</code>。</p></div>
-      <div class="wf-step"><div class="num">M3 · MESH</div><h4>网格生成</h4><p>blockMesh + snappyHexMesh，自动 STL 贴合度采样。</p></div>
-      <div class="wf-step"><div class="num">M4 · BC</div><h4>边界与 0.orig</h4><p>必走 <code>0.orig/</code> 工作流，改飞一行回滚。</p></div>
-      <div class="wf-step"><div class="num">M4.5 · IC</div><h4>初始场 setFields</h4><p>多相 / 分层算例的"算白算"防御。</p></div>
-      <div class="wf-step"><div class="num">M5 · SOLVE</div><h4>求解器异步运行</h4><p>残差时序流式抓取，发散自动停。</p></div>
-      <div class="wf-step"><div class="num">M6 · POST</div><h4>后处理与对比</h4><p>ParaView 离屏渲染 → VLM 体检 → 与论文图对比。</p></div>
-      <div class="wf-step"><div class="num">M7 · OPT</div><h4>参数寻优</h4><p>贝叶斯优化 study，baseline 通过后才允许开。</p></div>
+<section class="features-section" id="features">
+  <div class="wrap">
+    <div class="features-head">
+      <div class="eyebrow">核心能力</div>
+      <h2 class="headline">为仿真而生的<br>每一个细节。</h2>
+      <p class="subhead">30+ 原子工具、7 阶段闭环、9 层报错恢复。每一项都是为了让算例真正跑出来。</p>
+    </div>
+    <div class="feat-grid">
+      <div class="feat"><div class="icon">🔬</div><h4>OpenFOAM 全流程</h4><p>从 <code>blockMesh</code> / <code>snappyHexMesh</code> 到 setFields、求解器、残差、ParaView 渲染、收敛核验一条龙。</p></div>
+      <div class="feat"><div class="icon">👁️</div><h4>视觉核验闭环</h4><p>VLM 自动检查 STL 法向、网格质量、收敛曲线、云图对称性。算错了模型自己能看出来。</p></div>
+      <div class="feat"><div class="icon">📄</div><h4>论文复现专属协议</h4><p>文献核对三遍 + <code>paper_params.lock.md</code> 宪法锁 + DEVIATION REQUEST 偏离申报，杜绝越改越漂移。</p></div>
+      <div class="feat"><div class="icon">🪜</div><h4>BLAME LADDER L1–L9</h4><p>求解器报错按 9 层阶梯排查：边界 → 网格 → 时间步 → 物理模型 → 数值格式。不许跳级、不许甩锅论文。</p></div>
+      <div class="feat"><div class="icon">🔒</div><h4>本地优先 &middot; 数据不出门</h4><p>case、几何、结果、token 默认全部留在本机。可全程离线（接本地 vLLM / Ollama）。</p></div>
+      <div class="feat"><div class="icon">🧪</div><h4>不止 OpenFOAM</h4><p>颗粒流 MFIX、格子玻尔兹曼 LBM、贝叶斯参数寻优 study 都已内置标准工作流。</p></div>
+      <div class="feat"><div class="icon">📐</div><h4>KaTeX 公式渲染</h4><p>前端实时渲染数学公式，再也不是折行 ASCII 拼出来的伪公式。</p></div>
+      <div class="feat"><div class="icon">✋</div><h4>人在回路（HIL）</h4><p>需要论文图精确数据点？弹手动标注仪，你点几下，结果自动塞回对话上下文。</p></div>
+      <div class="feat"><div class="icon">🌐</div><h4>中文协议优化</h4><p>提示词、错误回复、报告生成全部中文优化。国产模型在这套协议下，仿真任务表现比 GPT-4o / Claude 更稳。</p></div>
     </div>
   </div>
 </section>
 
-<section class="section" style="padding-top:40px">
-  <div class="container">
-    <h2 class="section-title">硬核数据</h2>
-    <p class="section-sub">看代码不如看指标。</p>
-    <div class="stats-strip">
-      <div class="stat-cell"><div class="v">3700+</div><div class="l">主程序代码行</div></div>
-      <div class="stat-cell"><div class="v">30+</div><div class="l">原子工具调用</div></div>
-      <div class="stat-cell"><div class="v">6.1 MB</div><div class="l">混淆发行 bundle</div></div>
-      <div class="stat-cell"><div class="v">9</div><div class="l">报错恢复阶梯</div></div>
-      <div class="stat-cell"><div class="v">7</div><div class="l">阶段验证闭环</div></div>
-      <div class="stat-cell"><div class="v">100%</div><div class="l">中文协议</div></div>
+<section class="workflow">
+  <div class="wrap">
+    <div class="features-head">
+      <div class="eyebrow" style="color:#7ec0ff">M1 → M7 工作流</div>
+      <h2 class="headline">标准化的<br>仿真工程流水线。</h2>
+      <p class="subhead">把一次 CFD 任务拆成 7 个阶段，每段必须通过视觉核验才能进下一步。这是工程师该有的纪律。</p>
+    </div>
+    <div class="wf-grid">
+      <div class="wf"><div class="num">M1 &middot; GEOM</div><h5>几何与单位</h5><p>STL 检查、单位核对、法向 / 封闭性体检。</p></div>
+      <div class="wf"><div class="num">M2 &middot; PLAN</div><h5>方案与参数</h5><p>论文参数提取 + 三遍核对 + 宪法锁定。</p></div>
+      <div class="wf"><div class="num">M3 &middot; MESH</div><h5>网格生成</h5><p>blockMesh + snappyHexMesh，STL 贴合采样。</p></div>
+      <div class="wf"><div class="num">M4 &middot; BC</div><h5>边界与 0.orig</h5><p>必走 0.orig 工作流，改飞一行回滚。</p></div>
+      <div class="wf"><div class="num">M4.5 &middot; IC</div><h5>初始场 setFields</h5><p>多相 / 分层算例的"算白算"防御。</p></div>
+      <div class="wf"><div class="num">M5 &middot; SOLVE</div><h5>求解器异步运行</h5><p>残差时序流式抓取，发散自动停。</p></div>
+      <div class="wf"><div class="num">M6 &middot; POST</div><h5>后处理与对比</h5><p>ParaView 离屏渲染 → VLM 体检 → 论文图比对。</p></div>
+      <div class="wf"><div class="num">M7 &middot; OPT</div><h5>参数寻优</h5><p>贝叶斯优化 study，baseline 通过后才允许开。</p></div>
     </div>
   </div>
 </section>
 
-<section class="section" id="install">
-  <div class="container">
-    <h2 class="section-title">三步起飞</h2>
-    <p class="section-sub">Linux x64 服务器 / 工作站。Windows 用户可走 WSL2。</p>
+<section class="compare" id="compare">
+  <div class="wrap">
+    <div class="features-head">
+      <div class="eyebrow">横向对比</div>
+      <h2 class="headline">和通用 coding agent 的差距，<br>不在写代码，在工程纪律。</h2>
+    </div>
+    <div class="compare-card">
+      <table class="compare-table">
+        <thead>
+          <tr>
+            <th>能力</th>
+            <th>Codex / Cursor</th>
+            <th>Claude Code</th>
+            <th class="us">NullFlux</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>写 Python / C++ 脚本</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+          <tr class="highlight"><td>理解 OpenFOAM case 结构</td><td class="no">—</td><td class="partial">部分</td><td class="yes">原生</td></tr>
+          <tr class="highlight"><td>残差时序判收敛</td><td class="no">—</td><td class="no">—</td><td class="yes">流式抓取</td></tr>
+          <tr class="highlight"><td>VLM 视觉核验云图 / 网格</td><td class="no">—</td><td class="no">—</td><td class="yes">闭环</td></tr>
+          <tr class="highlight"><td>STL 贴合度采样验证</td><td class="no">—</td><td class="no">—</td><td class="yes">原子工具</td></tr>
+          <tr class="highlight"><td>论文参数宪法锁（防漂移）</td><td class="no">—</td><td class="no">—</td><td class="yes">paper_params.lock</td></tr>
+          <tr class="highlight"><td>9 层报错阶梯排查</td><td class="no">—</td><td class="no">—</td><td class="yes">BLAME LADDER</td></tr>
+          <tr><td>本地部署 &middot; 数据不外发</td><td class="no">SaaS</td><td class="no">SaaS</td><td class="yes">本机优先</td></tr>
+          <tr><td>使用国产模型</td><td class="no">—</td><td class="no">—</td><td class="yes">任意切换</td></tr>
+          <tr><td>Token 成本（同等任务）</td><td class="partial">中</td><td class="partial">高</td><td class="yes">国产仅 5–10%</td></tr>
+        </tbody>
+      </table>
+      <p class="compare-note">数据基于 OpenFOAM 圆柱绕流 / 多相分层算例的实测对比。Codex / Claude Code 是优秀的通用编程助手，但它们的设计目标不是工程仿真。</p>
+    </div>
+  </div>
+</section>
+
+<section class="install" id="install">
+  <div class="wrap">
+    <div class="features-head">
+      <div class="eyebrow">三步起飞</div>
+      <h2 class="headline">下载、解包、启动。</h2>
+      <p class="subhead">Linux x64 工作站。Windows 用户走 WSL2 即可。</p>
+    </div>
     <div class="install-grid">
-      <div class="code-block">
-        <div class="code-head"><div class="dots"><span></span><span></span><span></span></div><span>nullflux@workstation:~$</span></div>
-<pre><span class="c"># 1. 从 Release 下载封装发行版</span>
+      <div class="terminal">
+        <div class="terminal-head">
+          <div class="dots"><span></span><span></span><span></span></div>
+          <span class="title">nullflux@workstation: ~</span>
+        </div>
+<pre><span class="c"># 1. 下载封装发行版</span>
 <span class="k">wget</span> https://github.com/LZF1111/nullflux\
 /releases/latest/download/nullflux-linux-sealed.tar.gz
 
@@ -305,88 +480,93 @@ html{scroll-behavior:smooth;scroll-padding-top:80px}
 <span class="c"># 3. 启动</span>
 <span class="k">bash</span> start.sh
 
-<span class="c"># → 浏览器打开 http://localhost:<span class="v">5173</span></span>
+<span class="c"># → 浏览器打开 http://localhost:5173</span>
 <span class="c"># → 配置模型 API Key，开聊</span></pre>
       </div>
-      <div class="req">
+      <div class="req-card">
         <h4>系统要求</h4>
         <ul>
-          <li>OS · <code>Linux x86_64</code>（Ubuntu 20.04+ / CentOS 8+）</li>
-          <li>Node.js · <code>≥ 18</code></li>
-          <li>Python · <code>≥ 3.9</code>（含 numpy / PyMuPDF）</li>
-          <li>OpenFOAM · <code>v8/v10/v2306</code>（可选，跑 FOAM 任务必备）</li>
-          <li>ParaView · <code>5.10+</code> + <code>pvpython</code>（渲染必备）</li>
-          <li>显存 · 无要求（推理走 API）；本地推理需 ≥16GB</li>
+          <li><b>操作系统</b><code>Linux x86_64</code></li>
+          <li><b>Node.js</b><code>&ge; 18</code></li>
+          <li><b>Python</b><code>&ge; 3.9</code></li>
+          <li><b>OpenFOAM</b><code>v8 / v10 / v2306</code></li>
+          <li><b>ParaView</b><code>5.10+ pvpython</code></li>
+          <li><b>模型接入</b><code>OpenAI 兼容</code></li>
         </ul>
       </div>
     </div>
   </div>
 </section>
 
-<section class="section" id="faq">
-  <div class="container">
-    <h2 class="section-title">常见问题</h2>
-    <p class="section-sub">先看这里，省得 issue 里互相浪费时间。</p>
+<section class="faq-section" id="faq">
+  <div class="wrap">
+    <div class="features-head">
+      <div class="eyebrow">常见问题</div>
+      <h2 class="headline">先看这里。</h2>
+    </div>
     <div class="faq">
       <details class="faq-item" open>
-        <summary>NullFlux 和 ChatGPT / Cursor 有什么区别？</summary>
-        <div class="ans">通用编程助手不懂 CFD 流程：它不知道 <code>blockMesh</code> 失败 80% 是 STL 单位错、不知道 <code>0.orig/</code> 工作流、不会盯着残差曲线判断震荡型发散。NullFlux 内置全套 CFD 工程协议 + 视觉核验 + 论文复现专用工作流，并且能直接驱动本地的 OpenFOAM / MFIX / ParaView。</div>
+        <summary>NullFlux 和 Cursor / Codex / Claude Code 有什么区别？</summary>
+        <div class="ans">通用 coding agent 不懂 CFD 工程纪律：不知道 <code>blockMesh</code> 失败 80% 是 STL 单位错、不会盯残差曲线判收敛、不会做 <code>0.orig/</code> 工作流防回滚。NullFlux 是为仿真工程量身设计的：内置 7 阶段工作流、视觉核验闭环、9 层 BLAME LADDER、论文参数宪法锁，并能直接驱动本地 OpenFOAM / MFIX / ParaView。</div>
       </details>
       <details class="faq-item">
-        <summary>支持哪些大模型？</summary>
-        <div class="ans">默认接 SiliconFlow / DeepSeek / Kimi（VLM）/ Moonshot / 通义 / GLM / 智谱 / OpenAI / Claude / Gemini。也支持本地 vLLM / Ollama / LM Studio（OpenAI 兼容协议）。视觉核验默认用 Kimi-VL 或 Qwen-VL。</div>
+        <summary>支持哪些模型？必须用国产吗？</summary>
+        <div class="ans">任意大模型都可接入：OpenAI、Anthropic、Gemini、DeepSeek、Kimi、Qwen、GLM、智谱，以及本地 vLLM / Ollama / LM Studio。国产模型不是限制，而是性价比推荐 —— 在 NullFlux 的中文工程协议下，DeepSeek、Kimi 等模型在仿真任务上的稳定性与正确率常常优于通用大模型，而 token 成本仅为 5–10%。</div>
       </details>
       <details class="faq-item">
         <summary>开源吗？为什么是封装混淆发行？</summary>
-        <div class="ans">当前是 <b>封装发行版（sealed）</b>：esbuild 打包 + javascript-obfuscator（RC4 + 控制流扁平化）。源码暂未公开，欢迎付费使用 / 商务合作。封装版完全可用、可本地运行、可二次配置。</div>
+        <div class="ans">当前是封装发行版（sealed）：esbuild 打包 + javascript-obfuscator（RC4 + 控制流扁平化）。源码暂未公开，欢迎付费使用 / 商务合作。封装版完全可用、可本地运行、可二次配置 API。</div>
       </details>
       <details class="faq-item">
         <summary>数据安全吗？我的算例会被上传吗？</summary>
-        <div class="ans">case 文件、几何、结果、token 默认全部留在本机文件系统。NullFlux 本身不连任何上传服务器。**唯一外发**：你选的模型 API（DeepSeek / OpenAI / …）会收到对话上下文。要完全离线，接本地 vLLM 即可。</div>
+        <div class="ans">case 文件、几何、结果、token 默认全部留在本机文件系统。NullFlux 本身不连任何上传服务器。唯一外发：你选的模型 API（DeepSeek / OpenAI / …）会收到对话上下文。要完全离线，接本地 vLLM 即可。</div>
       </details>
       <details class="faq-item">
         <summary>Windows 能跑吗？</summary>
-        <div class="ans">前端 UI 跑 Windows 没问题，但 OpenFOAM / pvpython 需要 Linux。**推荐方案**：Windows + WSL2（Ubuntu 22.04），NullFlux 跑在 WSL 里，浏览器从 Windows 访问。</div>
+        <div class="ans">前端 UI 在 Windows 没问题，但 OpenFOAM / pvpython 需要 Linux。推荐：Windows + WSL2（Ubuntu 22.04），NullFlux 跑在 WSL，浏览器从 Windows 访问。</div>
       </details>
       <details class="faq-item">
-        <summary>遇到 Bug / 想提需求？</summary>
-        <div class="ans">去 <a href="https://github.com/LZF1111/nullflux/issues" style="color:#c9beff;text-decoration:underline">GitHub Issues</a> 提，附上 server 终端日志 + case 路径。或者直接联系作者（README 末尾有联系方式）。</div>
+        <summary>遇到 Bug 或想提需求？</summary>
+        <div class="ans">去 <a href="https://github.com/LZF1111/nullflux/issues">GitHub Issues</a> 提，附 server 终端日志 + case 路径，或直接联系作者。</div>
       </details>
     </div>
   </div>
 </section>
 
-<section class="section" id="demo" style="padding-top:40px">
-  <div class="container">
-    <h2 class="section-title">实机演示</h2>
-    <p class="section-sub">一段对话，从论文参数 → 网格 → 求解 → 后处理一气呵成。这才是 CFD 工程师该用的 AI。</p>
-    <div class="shot-wrap">
-      <video src="demo.mp4" poster="screenshot-main.png" controls autoplay muted loop playsinline preload="metadata" style="width:100%;border-radius:12px;border:1px solid rgba(255,255,255,.08);display:block">
-        你的浏览器不支持 video 标签。<a href="demo.mp4" style="color:#c9beff">点此下载演示</a>
-      </video>
+<section class="demo-section" id="demo">
+  <div class="wrap">
+    <div class="features-head">
+      <div class="eyebrow">实机演示</div>
+      <h2 class="headline">一段对话，<br>跑完整条工程链。</h2>
+      <p class="subhead">论文参数 → 网格 → 求解 → 后处理，一气呵成。这才是 CFD 工程师该用的 AI。</p>
     </div>
-    <p class="shot-caption">▶ 对话发起 → 工具调用 → OpenFOAM 求解 → ParaView 渲染 → 视觉核验闭环</p>
+    <div class="device" style="margin-top:0">
+      <div class="device-frame">
+        <video src="demo.mp4" poster="screenshot-main.png" controls autoplay muted loop playsinline preload="metadata">
+          你的浏览器不支持 video 标签。<a href="demo.mp4">点此下载演示</a>
+        </video>
+      </div>
+      <p class="device-caption">▶ 对话发起 → 工具调用 → OpenFOAM 求解 → ParaView 渲染 → 视觉核验闭环</p>
+    </div>
   </div>
 </section>
 
-<section class="section">
-  <div class="container">
-    <div class="final-cta">
-      <h2>把你的<span style="background:var(--grad);-webkit-background-clip:text;background-clip:text;color:transparent"> Linux 工作站</span>，<br>变成会自己跑算例的伙计。</h2>
-      <p>v0.6.0 已经上线。开箱即用，下载即可。</p>
-      <div class="cta-row" style="margin:0">
-        <a href="https://github.com/LZF1111/nullflux/releases/latest" class="btn btn-primary">立即下载</a>
-        <a href="https://github.com/LZF1111/nullflux" class="btn btn-secondary">查看 GitHub</a>
-      </div>
+<section class="final">
+  <div class="wrap">
+    <h2>把你的 Linux 工作站，<br>变成一位<span class="accent">仿真工程师</span>。</h2>
+    <p>v0.6.0 已上线 &middot; 开箱即用</p>
+    <div class="cta-row">
+      <a href="https://github.com/LZF1111/nullflux/releases/latest" class="btn btn-primary">立即下载</a>
+      <a href="https://github.com/LZF1111/nullflux" class="btn-link">查看 GitHub</a>
     </div>
   </div>
 </section>
 
 <footer>
-  <div class="container row">
+  <div class="row">
     <div>
-      <div class="brand" style="margin-bottom:6px"><span class="logo">N</span><span>Null<b>𝑭𝒍𝒖𝒙</b></span></div>
-      <span>© 2026 LZF · Proprietary · Built with ☕ on a CFD workstation</span>
+      <div class="brand" style="margin-bottom:6px"><span class="logo">N</span><span>NullFlux</span></div>
+      <span>© 2026 LZF &middot; Proprietary &middot; Built for serious CFD engineers.</span>
     </div>
     <div class="links">
       <a href="https://github.com/LZF1111/nullflux">GitHub</a>
@@ -397,14 +577,5 @@ html{scroll-behavior:smooth;scroll-padding-top:80px}
   </div>
 </footer>
 
-<script>
-// subtle parallax on hero
-const fx = document.querySelector('.bg-fx');
-window.addEventListener('mousemove', (e) => {
-  const x = (e.clientX / window.innerWidth - 0.5) * 20;
-  const y = (e.clientY / window.innerHeight - 0.5) * 20;
-  fx.style.transform = `translate(${x}px,${y}px)`;
-});
-</script>
 </body>
 </html>
