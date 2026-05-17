@@ -172,12 +172,12 @@ html{scroll-behavior:smooth;scroll-padding-top:80px}
       <span class="badge">本地优先 · 数据不出本机</span>
     </div>
     <h1 class="title">
-      让 AI 真正<br>
-      <span class="gradient">跑通你的 CFD</span>
+      不止是 coding agent，<br>
+      更是你的<span class="gradient">仿真工程专家</span>
     </h1>
-    <p class="tag"><b>NullFlux</b> 是一个本地部署、原生中文的 AI Agent，</p>
-    <p class="tag">专为 <b>OpenFOAM / MFIX / LBM / ParaView</b> 工作流而生。</p>
-    <p class="author">读论文 · 写代码 · 跑求解 · 调网格 · 解释残差 —— 全程对话驱动，by <b style="color:#c9beff">LZF</b></p>
+    <p class="tag"><b>NullFlux</b> 不只会写代码 —— 它读论文、建网格、跑求解、调边界、看云图、判收敛，</p>
+    <p class="tag">把一个 <b>CFD 工程师的完整大脑</b>，本地化部署在你的工作站上。</p>
+    <p class="author">OpenFOAM · MFIX · LBM · ParaView —— 全程中文对话驱动，by <b style="color:#c9beff">LZF</b></p>
     <div class="cta-row">
       <a href="https://github.com/LZF1111/nullflux/releases/latest" class="btn btn-primary">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -198,12 +198,6 @@ html{scroll-behavior:smooth;scroll-padding-top:80px}
       <img src="screenshot-main.png" alt="NullFlux 主界面 — OpenFOAM 圆柱绕流算例">
     </div>
     <p class="shot-caption">主界面：左侧资源管理器 · 中部 ParaView 渲染 + 终端 · 右侧多轮对话 + 工具调用卡片</p>
-    <div class="shot-wrap" style="margin-top:36px">
-      <video src="demo.mp4" poster="screenshot-main.png" controls autoplay muted loop playsinline preload="metadata" style="width:100%;border-radius:12px;border:1px solid rgba(255,255,255,.08);display:block">
-        你的浏览器不支持 video 标签。<a href="demo.mp4" style="color:#c9beff">点此下载演示</a>
-      </video>
-    </div>
-    <p class="shot-caption">▶ 实机演示：从对话发起 → 工具调用 → OpenFOAM 求解 → ParaView 渲染 → 视觉核验闭环</p>
   </div>
 </section>
 
@@ -359,6 +353,19 @@ html{scroll-behavior:smooth;scroll-padding-top:80px}
         <div class="ans">去 <a href="https://github.com/LZF1111/nullflux/issues" style="color:#c9beff;text-decoration:underline">GitHub Issues</a> 提，附上 server 终端日志 + case 路径。或者直接联系作者（README 末尾有联系方式）。</div>
       </details>
     </div>
+  </div>
+</section>
+
+<section class="section" id="demo" style="padding-top:40px">
+  <div class="container">
+    <h2 class="section-title">实机演示</h2>
+    <p class="section-sub">一段对话，从论文参数 → 网格 → 求解 → 后处理一气呵成。这才是 CFD 工程师该用的 AI。</p>
+    <div class="shot-wrap">
+      <video src="demo.mp4" poster="screenshot-main.png" controls autoplay muted loop playsinline preload="metadata" style="width:100%;border-radius:12px;border:1px solid rgba(255,255,255,.08);display:block">
+        你的浏览器不支持 video 标签。<a href="demo.mp4" style="color:#c9beff">点此下载演示</a>
+      </video>
+    </div>
+    <p class="shot-caption">▶ 对话发起 → 工具调用 → OpenFOAM 求解 → ParaView 渲染 → 视觉核验闭环</p>
   </div>
 </section>
 
