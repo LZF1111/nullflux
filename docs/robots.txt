@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://lzf1111.github.io/nullflux/sitemap.xml

@@ -3,13 +3,69 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>NullFlux — 不只是 coding agent，更是你的仿真工程专家</title>
-<meta name="description" content="NullFlux 是一个本地部署的 AI 仿真工程师。读论文、建网格、跑开源流体力学软件（OpenFOAM / MFIX / LBM / SU2 …）、调 ParaView，还能为你从零开发未知求解器。任意大模型可接入，国产模型在 CFD 任务上性价比与效果均优于通用 Codex / Claude Code。">
-<meta name="keywords" content="CFD, OpenFOAM, MFIX, LBM, SU2, ParaView, AI Agent, 仿真工程, 科学计算, 论文复现, 求解器开发, LZF">
-<meta property="og:title" content="NullFlux — 不只是 coding agent，更是你的仿真工程专家">
-<meta property="og:description" content="不只是 coding agent，更是你的仿真工程专家。任意大模型接入；国产模型性价比更高；能直接驱动开源流体力学软件，并能从零开发未知求解器。">
-<meta property="og:image" content="screenshot-main.png">
+<title>NullFlux · AI CFD Agent — 本地 AI 仿真工程师 / OpenFOAM AI 助手</title>
+<meta name="description" content="NullFlux 是一款本地部署的 AI CFD Agent / AI 仿真工程师。读论文、建网格、跑 OpenFOAM / MFIX / LBM / SU2 等开源流体力学软件、调 ParaView、判收敛，还能为你从零开发未知求解器。支持 DeepSeek、Kimi、Qwen、GLM、Claude、GPT 等任意大模型，是 Codex / Claude Code 在科学计算与 CFD 仿真场景下的专业替代。">
+<meta name="keywords" content="AI CFD, AI for CFD, AI 仿真, AI 仿真工程师, CFD AI Agent, OpenFOAM AI, OpenFOAM Copilot, AI CAE, AI 求解器开发, LLM CFD, DeepSeek CFD, Claude Code 替代, Codex 替代, Cursor for CFD, 计算流体力学 AI, MFIX, LBM, SU2, ParaView, 论文复现, 仿真自动化, scientific computing agent, NullFlux, LZF">
+<meta name="author" content="LZF">
+<meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large">
+<meta name="theme-color" content="#0066cc">
+<link rel="canonical" href="https://lzf1111.github.io/nullflux/">
+<meta property="og:site_name" content="NullFlux">
+<meta property="og:title" content="NullFlux · AI CFD Agent — 本地 AI 仿真工程师 / OpenFOAM AI 助手">
+<meta property="og:description" content="本地部署的 AI CFD Agent。读论文、建网格、跑 OpenFOAM / MFIX / LBM / SU2，调 ParaView，并能从零开发未知求解器。支持 DeepSeek / Kimi / Qwen / Claude / GPT 等任意大模型。">
+<meta property="og:image" content="https://lzf1111.github.io/nullflux/screenshot-main.png">
+<meta property="og:url" content="https://lzf1111.github.io/nullflux/">
 <meta property="og:type" content="website">
+<meta property="og:locale" content="zh_CN">
+<meta property="og:locale:alternate" content="en_US">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="NullFlux · AI CFD Agent — 本地 AI 仿真工程师">
+<meta name="twitter:description" content="读论文 · 建网格 · 跑 OpenFOAM / MFIX / LBM / SU2 · 调 ParaView · 从零开发未知求解器。AI for CFD 的专业方案。">
+<meta name="twitter:image" content="https://lzf1111.github.io/nullflux/screenshot-main.png">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "SoftwareApplication",
+      "name": "NullFlux",
+      "alternateName": ["NullFlux AI CFD Agent", "NullFlux 仿真工程专家"],
+      "description": "本地部署的 AI CFD Agent / AI 仿真工程师。读论文、建网格、跑 OpenFOAM / MFIX / LBM / SU2 等开源流体力学软件、调 ParaView，并能从零开发未知求解器。",
+      "applicationCategory": "ScientificApplication",
+      "applicationSubCategory": "Computational Fluid Dynamics",
+      "operatingSystem": "Linux x86_64 (WSL2 on Windows)",
+      "softwareVersion": "0.6.1",
+      "downloadUrl": "https://github.com/LZF1111/nullflux/releases/latest",
+      "url": "https://lzf1111.github.io/nullflux/",
+      "author": {"@type": "Person", "name": "LZF", "url": "https://github.com/LZF1111"},
+      "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"},
+      "keywords": "AI CFD, AI for CFD, AI 仿真, OpenFOAM AI Agent, AI 求解器开发, LLM CFD, DeepSeek CFD, Claude Code 替代, Codex 替代",
+      "featureList": [
+        "AI 驱动 OpenFOAM / MFIX / LBM / SU2 等开源 CFD 软件全流程",
+        "未知求解器从零开发（方程推导 → C++ 实现 → MMS 验证）",
+        "VLM 视觉核验闭环：自动检查 STL、网格、云图、残差",
+        "9 层 BLAME LADDER 报错排查",
+        "论文参数宪法锁，防止越改越漂移",
+        "任意大模型接入：DeepSeek / Kimi / Qwen / GLM / Claude / GPT / vLLM",
+        "本地运行，数据不出工作站"
+      ]
+    },
+    {
+      "@type": "FAQPage",
+      "mainEntity": [
+        {"@type": "Question", "name": "什么是 AI CFD Agent？NullFlux 和 Cursor / Codex / Claude Code 有什么区别？",
+         "acceptedAnswer": {"@type": "Answer", "text": "通用 coding agent 只能写代码，不懂 CFD 工程纪律。NullFlux 是为计算流体力学量身设计的 AI 仿真工程师：内置 7 阶段工作流、视觉核验闭环、9 层报错阶梯、论文参数宪法锁，并能直接驱动 OpenFOAM、MFIX、LBM、SU2、ParaView，还能为未知方程从零开发新求解器。"}},
+        {"@type": "Question", "name": "NullFlux 支持哪些大模型？必须用国产模型吗？",
+         "acceptedAnswer": {"@type": "Answer", "text": "任意大模型都可接入：OpenAI、Anthropic Claude、Google Gemini、DeepSeek、Kimi、Qwen、GLM、智谱，以及本地 vLLM / Ollama / LM Studio。国产模型不是限制，而是性价比推荐：在 NullFlux 的中文工程协议下，DeepSeek / Kimi 等在 CFD 仿真任务上的稳定性与正确率常常优于通用大模型，而 token 成本仅为 5–10%。"}},
+        {"@type": "Question", "name": "AI 能为 OpenFOAM 写新求解器吗？",
+         "acceptedAnswer": {"@type": "Answer", "text": "可以。NullFlux 内置未知求解器开发流水线：从论文抽方程 → 量纲一致性核对 → fork 最近邻求解器 → fvm/fvc 离散实现 → wmake 编译调试（BLAME LADDER L8）→ Manufactured Solution + 收敛阶 + benchmark 三关验证。"}},
+        {"@type": "Question", "name": "数据安全吗？算例会被上传吗？",
+         "acceptedAnswer": {"@type": "Answer", "text": "case 文件、几何、结果、token 默认全部留在本机。NullFlux 本身不连任何上传服务器。唯一外发：你选的模型 API。要完全离线，接本地 vLLM / Ollama 即可。"}}
+      ]
+    }
+  ]
+}
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+SC:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -376,7 +432,7 @@ footer .links{display:flex;gap:24px;flex-wrap:wrap}
   </div>
   <div class="device">
     <div class="device-frame">
-      <img src="screenshot-main.png" alt="NullFlux 主界面">
+      <img src="screenshot-main.png" alt="NullFlux AI CFD Agent 主界面截图 — 本地 AI 仿真工程师驱动 OpenFOAM 与 ParaView">
     </div>
     <p class="device-caption">主界面 &middot; 左侧资源管理器 &middot; 中部 ParaView 渲染 + 终端 &middot; 右侧多轮对话与工具调用</p>
   </div>
