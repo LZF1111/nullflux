@@ -146,10 +146,53 @@ CFDriver 把**CFD 工程师的工作流**直接编码到 System Prompt 与工具
 
 ## 快速开始
 
+### 0. 先装 Node.js 18+（首次部署必看）
+
+CFDriver 是 Node 程序，启动前请确保 `node -v` 输出 ≥ `v18.0.0`。如果报 `exec: node: not found`，按下面任一方案安装：
+
+**方案 A — 用发行版自带源（最快，需 sudo）**
+
 ```bash
-# 1. 下载并解压
+# Ubuntu / Debian
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+
+# RHEL / CentOS / Rocky / Alma
+curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash -
+sudo yum install -y nodejs
+
+# 验证
+node -v   # 应输出 v20.x.x
+```
+
+**方案 B — 用 nvm（无需 sudo，推荐 HPC 登录节点）**
+
+```bash
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+source ~/.bashrc
+nvm install 20
+node -v
+```
+
+**方案 C — 已装 Node 但 `start.sh` 找不到**
+
+```bash
+which node           # 看是否在 PATH
+# 若装在 /opt/node-v20/bin/node 等非标准位置：
+echo 'export PATH=$PATH:/opt/node-v20/bin' >> ~/.bashrc
+source ~/.bashrc
+```
+
+> ⚠️ Node 版本必须 ≥ 18。CFDriver 用到了 `fetch`、ESM、`AbortSignal.timeout` 等 18+ 特性，Node 16 会直接启动失败。
+
+---
+
+### 1. 下载并解压
+
+```bash
+wget https://github.com/LZF1111/nullflux/releases/download/v0.6.2/cfdriver-linux-sealed.tar.gz
 tar xzf cfdriver-linux-sealed.tar.gz
-cd cfdriver-linux-sealed
+cd sealed
 
 # 2. 启动（默认端口 5174）
 ./start.sh
@@ -179,7 +222,7 @@ scp cfdriver-linux-sealed.tar.gz user@server:/opt/
 # 在服务器上
 ssh user@server
 cd /opt && tar xzf cfdriver-linux-sealed.tar.gz
-cd cfdriver-linux-sealed
+cd sealed
 ./start.sh --port 5180 &
 ```
 
