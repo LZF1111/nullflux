@@ -1,17 +1,17 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>NullFlux · AI CFD Agent — 本地 AI 仿真工程师 / OpenFOAM AI 助手</title>
-<meta name="description" content="NullFlux 是一款本地部署的 AI CFD Agent / AI 仿真工程师。读论文、建网格、跑 OpenFOAM / MFIX / LBM / SU2 等开源流体力学软件、调 ParaView、判收敛，还能为你从零开发未知求解器。支持 DeepSeek、Kimi、Qwen、GLM、Claude、GPT 等任意大模型，是 Codex / Claude Code 在科学计算与 CFD 仿真场景下的专业替代。">
-<meta name="keywords" content="AI CFD, AI for CFD, AI 仿真, AI 仿真工程师, CFD AI Agent, OpenFOAM AI, OpenFOAM Copilot, AI CAE, AI 求解器开发, LLM CFD, DeepSeek CFD, Claude Code 替代, Codex 替代, Cursor for CFD, 计算流体力学 AI, MFIX, LBM, SU2, ParaView, 论文复现, 仿真自动化, scientific computing agent, NullFlux, LZF">
+<title>CFDriver · AI CFD Agent — 本地 AI 仿真工程师 / OpenFOAM AI 助手</title>
+<meta name="description" content="CFDriver 是一款本地部署的 AI CFD Agent / AI 仿真工程师。读论文、建网格、跑 OpenFOAM / MFIX / LBM / SU2 等开源流体力学软件、调 ParaView、判收敛，还能为你从零开发未知求解器。支持 DeepSeek、Kimi、Qwen、GLM、Claude、GPT 等任意大模型，是 Codex / Claude Code 在科学计算与 CFD 仿真场景下的专业替代。">
+<meta name="keywords" content="AI CFD, AI for CFD, AI 仿真, AI 仿真工程师, CFD AI Agent, OpenFOAM AI, OpenFOAM Copilot, AI CAE, AI 求解器开发, LLM CFD, DeepSeek CFD, Claude Code 替代, Codex 替代, Cursor for CFD, 计算流体力学 AI, MFIX, LBM, SU2, ParaView, 论文复现, 仿真自动化, scientific computing agent, CFDriver, LZF">
 <meta name="author" content="LZF">
 <meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large">
 <meta name="theme-color" content="#0066cc">
 <link rel="canonical" href="https://lzf1111.github.io/nullflux/">
-<meta property="og:site_name" content="NullFlux">
-<meta property="og:title" content="NullFlux · AI CFD Agent — 本地 AI 仿真工程师 / OpenFOAM AI 助手">
+<meta property="og:site_name" content="CFDriver">
+<meta property="og:title" content="CFDriver · AI CFD Agent — 本地 AI 仿真工程师 / OpenFOAM AI 助手">
 <meta property="og:description" content="本地部署的 AI CFD Agent。读论文、建网格、跑 OpenFOAM / MFIX / LBM / SU2，调 ParaView，并能从零开发未知求解器。支持 DeepSeek / Kimi / Qwen / Claude / GPT 等任意大模型。">
 <meta property="og:image" content="https://lzf1111.github.io/nullflux/screenshot-main.png">
 <meta property="og:url" content="https://lzf1111.github.io/nullflux/">
@@ -19,7 +19,7 @@
 <meta property="og:locale" content="zh_CN">
 <meta property="og:locale:alternate" content="en_US">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="NullFlux · AI CFD Agent — 本地 AI 仿真工程师">
+<meta name="twitter:title" content="CFDriver · AI CFD Agent — 本地 AI 仿真工程师">
 <meta name="twitter:description" content="读论文 · 建网格 · 跑 OpenFOAM / MFIX / LBM / SU2 · 调 ParaView · 从零开发未知求解器。AI for CFD 的专业方案。">
 <meta name="twitter:image" content="https://lzf1111.github.io/nullflux/screenshot-main.png">
 <script type="application/ld+json">
@@ -28,8 +28,8 @@
   "@graph": [
     {
       "@type": "SoftwareApplication",
-      "name": "NullFlux",
-      "alternateName": ["NullFlux AI CFD Agent", "NullFlux 仿真工程专家"],
+      "name": "CFDriver",
+      "alternateName": ["CFDriver AI CFD Agent", "CFDriver 仿真工程专家"],
       "description": "本地部署的 AI CFD Agent / AI 仿真工程师。读论文、建网格、跑 OpenFOAM / MFIX / LBM / SU2 等开源流体力学软件、调 ParaView，并能从零开发未知求解器。",
       "applicationCategory": "ScientificApplication",
       "applicationSubCategory": "Computational Fluid Dynamics",
@@ -53,14 +53,14 @@
     {
       "@type": "FAQPage",
       "mainEntity": [
-        {"@type": "Question", "name": "什么是 AI CFD Agent？NullFlux 和 Cursor / Codex / Claude Code 有什么区别？",
-         "acceptedAnswer": {"@type": "Answer", "text": "通用 coding agent 只能写代码，不懂 CFD 工程纪律。NullFlux 是为计算流体力学量身设计的 AI 仿真工程师：内置 7 阶段工作流、视觉核验闭环、9 层报错阶梯、论文参数宪法锁，并能直接驱动 OpenFOAM、MFIX、LBM、SU2、ParaView，还能为未知方程从零开发新求解器。"}},
-        {"@type": "Question", "name": "NullFlux 支持哪些大模型？必须用国产模型吗？",
-         "acceptedAnswer": {"@type": "Answer", "text": "任意大模型都可接入：OpenAI、Anthropic Claude、Google Gemini、DeepSeek、Kimi、Qwen、GLM、智谱，以及本地 vLLM / Ollama / LM Studio。国产模型不是限制，而是性价比推荐：在 NullFlux 的中文工程协议下，DeepSeek / Kimi 等在 CFD 仿真任务上的稳定性与正确率常常优于通用大模型，而 token 成本仅为 5–10%。"}},
+        {"@type": "Question", "name": "什么是 AI CFD Agent？CFDriver 和 Cursor / Codex / Claude Code 有什么区别？",
+         "acceptedAnswer": {"@type": "Answer", "text": "通用 coding agent 只能写代码，不懂 CFD 工程纪律。CFDriver 是为计算流体力学量身设计的 AI 仿真工程师：内置 7 阶段工作流、视觉核验闭环、9 层报错阶梯、论文参数宪法锁，并能直接驱动 OpenFOAM、MFIX、LBM、SU2、ParaView，还能为未知方程从零开发新求解器。"}},
+        {"@type": "Question", "name": "CFDriver 支持哪些大模型？必须用国产模型吗？",
+         "acceptedAnswer": {"@type": "Answer", "text": "任意大模型都可接入：OpenAI、Anthropic Claude、Google Gemini、DeepSeek、Kimi、Qwen、GLM、智谱，以及本地 vLLM / Ollama / LM Studio。国产模型不是限制，而是性价比推荐：在 CFDriver 的中文工程协议下，DeepSeek / Kimi 等在 CFD 仿真任务上的稳定性与正确率常常优于通用大模型，而 token 成本仅为 5–10%。"}},
         {"@type": "Question", "name": "AI 能为 OpenFOAM 写新求解器吗？",
-         "acceptedAnswer": {"@type": "Answer", "text": "可以。NullFlux 内置未知求解器开发流水线：从论文抽方程 → 量纲一致性核对 → fork 最近邻求解器 → fvm/fvc 离散实现 → wmake 编译调试（BLAME LADDER L8）→ Manufactured Solution + 收敛阶 + benchmark 三关验证。"}},
+         "acceptedAnswer": {"@type": "Answer", "text": "可以。CFDriver 内置未知求解器开发流水线：从论文抽方程 → 量纲一致性核对 → fork 最近邻求解器 → fvm/fvc 离散实现 → wmake 编译调试（BLAME LADDER L8）→ Manufactured Solution + 收敛阶 + benchmark 三关验证。"}},
         {"@type": "Question", "name": "数据安全吗？算例会被上传吗？",
-         "acceptedAnswer": {"@type": "Answer", "text": "case 文件、几何、结果、token 默认全部留在本机。NullFlux 本身不连任何上传服务器。唯一外发：你选的模型 API。要完全离线，接本地 vLLM / Ollama 即可。"}}
+         "acceptedAnswer": {"@type": "Answer", "text": "case 文件、几何、结果、token 默认全部留在本机。CFDriver 本身不连任何上传服务器。唯一外发：你选的模型 API。要完全离线，接本地 vLLM / Ollama 即可。"}}
       ]
     }
   ]
@@ -404,7 +404,7 @@ footer .links{display:flex;gap:24px;flex-wrap:wrap}
   <div class="inner">
     <a href="#top" class="brand">
       <span class="logo">N</span>
-      <span>NullFlux</span>
+      <span>CFDriver</span>
     </a>
     <div class="nav-links">
       <a href="#pitch">概述</a>
@@ -432,7 +432,7 @@ footer .links{display:flex;gap:24px;flex-wrap:wrap}
   </div>
   <div class="device">
     <div class="device-frame">
-      <img src="screenshot-main.png" alt="NullFlux AI CFD Agent 主界面截图 — 本地 AI 仿真工程师驱动 OpenFOAM 与 ParaView">
+      <img src="screenshot-main.png" alt="CFDriver AI CFD Agent 主界面截图 — 本地 AI 仿真工程师驱动 OpenFOAM 与 ParaView">
     </div>
     <p class="device-caption">主界面 &middot; 左侧资源管理器 &middot; 中部 ParaView 渲染 + 终端 &middot; 右侧多轮对话与工具调用</p>
   </div>
@@ -440,9 +440,9 @@ footer .links{display:flex;gap:24px;flex-wrap:wrap}
 
 <section class="pitch" id="pitch">
   <div class="wrap">
-    <div class="eyebrow">为什么是 NullFlux</div>
+    <div class="eyebrow">为什么是 CFDriver</div>
     <h2 class="headline">通用代码 Agent 写得了脚本，<br>却跑不通一个仿真。</h2>
-    <p class="subhead">Codex、Claude Code 这类通用助手能写代码，但不懂为什么 <code>blockMesh</code> 报 Negative volume，不懂残差震荡型发散，不懂 <code>0.orig/</code> 工作流，更不会判断一个新写的求解器有没有违反守恒。NullFlux 内置完整 CFD 工程协议、视觉核验闭环、论文复现专用流程以及未知求解器开发流水线，把"一位懂仿真的工程师"装进对话框。</p>
+    <p class="subhead">Codex、Claude Code 这类通用助手能写代码，但不懂为什么 <code>blockMesh</code> 报 Negative volume，不懂残差震荡型发散，不懂 <code>0.orig/</code> 工作流，更不会判断一个新写的求解器有没有违反守恒。CFDriver 内置完整 CFD 工程协议、视觉核验闭环、论文复现专用流程以及未知求解器开发流水线，把"一位懂仿真的工程师"装进对话框。</p>
     <div class="pitch-stats">
       <div class="ps"><div class="ps-num">30+</div><div class="ps-lbl">原子工具</div></div>
       <div class="ps"><div class="ps-num">M1–M7</div><div class="ps-lbl">阶段工作流</div></div>
@@ -458,7 +458,7 @@ footer .links{display:flex;gap:24px;flex-wrap:wrap}
       <div>
         <div class="tile-eyebrow">任意模型接入</div>
         <h3>选你想要的模型。<br><span class="accent">国产模型 = 性价比之选。</span></h3>
-        <p class="tile-sub">OpenAI &middot; Anthropic &middot; Google &middot; DeepSeek &middot; Kimi &middot; 通义 &middot; GLM &middot; 智谱 &middot; 本地 vLLM —— 任何 OpenAI 兼容协议都能接。在 CFD 工程任务上，国产模型不仅 token 成本仅为 Claude 的 5–10%，效果反而常常更稳，因为 NullFlux 的中文工程协议为它们量身定制，连求解器 C++ 代码生成都做了针对性提示工程。</p>
+        <p class="tile-sub">OpenAI &middot; Anthropic &middot; Google &middot; DeepSeek &middot; Kimi &middot; 通义 &middot; GLM &middot; 智谱 &middot; 本地 vLLM —— 任何 OpenAI 兼容协议都能接。在 CFD 工程任务上，国产模型不仅 token 成本仅为 Claude 的 5–10%，效果反而常常更稳，因为 CFDriver 的中文工程协议为它们量身定制，连求解器 C++ 代码生成都做了针对性提示工程。</p>
       </div>
       <div class="row">
         <span class="pill">OpenAI</span>
@@ -497,7 +497,7 @@ footer .links{display:flex;gap:24px;flex-wrap:wrap}
       <div class="solver-copy">
         <div class="eyebrow">未知求解器开发</div>
         <h2>没人写过的方程，<br>也能<span class="accent">从零跑起来</span>。</h2>
-        <p>大多数 AI 助手只能调用 OpenFOAM 现成求解器。NullFlux 不同 —— 给它一篇论文或一组控制方程，它能为你完整完成新求解器的研发闭环。</p>
+        <p>大多数 AI 助手只能调用 OpenFOAM 现成求解器。CFDriver 不同 —— 给它一篇论文或一组控制方程，它能为你完整完成新求解器的研发闭环。</p>
         <p>这条流水线把"科研里最痛的两周"压成"一次对话"。任何小众物理场、改写本构、加源项、换数值格式，都能在工程纪律下落地。</p>
         <div class="solver-list">
           <div class="it"><span class="k">STEP 1</span><span class="t"><b>方程推导核对。</b><span>从论文抽控制方程，KaTeX 渲染、量纲一致性自动校验，缺失边界条件主动提问。</span></span></div>
@@ -512,7 +512,7 @@ footer .links{display:flex;gap:24px;flex-wrap:wrap}
           <div class="dots"><span></span><span></span><span></span></div>
           <span class="title">myNewSolver.C &middot; auto-generated</span>
         </div>
-<pre><span class="c">// NullFlux 自动生成：基于论文 (Smith 2024) 推导</span>
+<pre><span class="c">// CFDriver 自动生成：基于论文 (Smith 2024) 推导</span>
 <span class="c">// 方程：∂(αρU)/∂t + ∇·(αρU⊗U) = -∇p + ∇·τ + αρg + S_drag</span>
 
 <span class="k">while</span> (runTime.run())
@@ -603,7 +603,7 @@ footer .links{display:flex;gap:24px;flex-wrap:wrap}
             <th>能力</th>
             <th>Codex / Cursor</th>
             <th>Claude Code</th>
-            <th class="us">NullFlux</th>
+            <th class="us">CFDriver</th>
           </tr>
         </thead>
         <tbody>
@@ -636,7 +636,7 @@ footer .links{display:flex;gap:24px;flex-wrap:wrap}
       <div class="terminal">
         <div class="terminal-head">
           <div class="dots"><span></span><span></span><span></span></div>
-          <span class="title">nullflux@workstation: ~</span>
+          <span class="title">cfdriver@workstation: ~</span>
         </div>
 <pre><span class="c"># 1. 下载封装发行版</span>
 <span class="k">wget</span> https://github.com/LZF1111/nullflux\
@@ -675,12 +675,12 @@ footer .links{display:flex;gap:24px;flex-wrap:wrap}
     </div>
     <div class="faq">
       <details class="faq-item" open>
-        <summary>NullFlux 和 Cursor / Codex / Claude Code 有什么区别？</summary>
-        <div class="ans">通用 coding agent 不懂 CFD 工程纪律：不知道 <code>blockMesh</code> 失败 80% 是 STL 单位错、不会盯残差曲线判收敛、不会做 <code>0.orig/</code> 工作流防回滚。NullFlux 是为仿真工程量身设计的：内置 7 阶段工作流、视觉核验闭环、9 层 BLAME LADDER、论文参数宪法锁，并能直接驱动本地 OpenFOAM / MFIX / ParaView。</div>
+        <summary>CFDriver 和 Cursor / Codex / Claude Code 有什么区别？</summary>
+        <div class="ans">通用 coding agent 不懂 CFD 工程纪律：不知道 <code>blockMesh</code> 失败 80% 是 STL 单位错、不会盯残差曲线判收敛、不会做 <code>0.orig/</code> 工作流防回滚。CFDriver 是为仿真工程量身设计的：内置 7 阶段工作流、视觉核验闭环、9 层 BLAME LADDER、论文参数宪法锁，并能直接驱动本地 OpenFOAM / MFIX / ParaView。</div>
       </details>
       <details class="faq-item">
         <summary>支持哪些模型？必须用国产吗？</summary>
-        <div class="ans">任意大模型都可接入：OpenAI、Anthropic、Gemini、DeepSeek、Kimi、Qwen、GLM、智谱，以及本地 vLLM / Ollama / LM Studio。国产模型不是限制，而是性价比推荐 —— 在 NullFlux 的中文工程协议下，DeepSeek、Kimi 等模型在仿真任务上的稳定性与正确率常常优于通用大模型，而 token 成本仅为 5–10%。</div>
+        <div class="ans">任意大模型都可接入：OpenAI、Anthropic、Gemini、DeepSeek、Kimi、Qwen、GLM、智谱，以及本地 vLLM / Ollama / LM Studio。国产模型不是限制，而是性价比推荐 —— 在 CFDriver 的中文工程协议下，DeepSeek、Kimi 等模型在仿真任务上的稳定性与正确率常常优于通用大模型，而 token 成本仅为 5–10%。</div>
       </details>
       <details class="faq-item">
         <summary>开源吗？为什么是封装混淆发行？</summary>
@@ -688,11 +688,11 @@ footer .links{display:flex;gap:24px;flex-wrap:wrap}
       </details>
       <details class="faq-item">
         <summary>数据安全吗？我的算例会被上传吗？</summary>
-        <div class="ans">case 文件、几何、结果、token 默认全部留在本机文件系统。NullFlux 本身不连任何上传服务器。唯一外发：你选的模型 API（DeepSeek / OpenAI / …）会收到对话上下文。要完全离线，接本地 vLLM 即可。</div>
+        <div class="ans">case 文件、几何、结果、token 默认全部留在本机文件系统。CFDriver 本身不连任何上传服务器。唯一外发：你选的模型 API（DeepSeek / OpenAI / …）会收到对话上下文。要完全离线，接本地 vLLM 即可。</div>
       </details>
       <details class="faq-item">
         <summary>Windows 能跑吗？</summary>
-        <div class="ans">前端 UI 在 Windows 没问题，但 OpenFOAM / pvpython 需要 Linux。推荐：Windows + WSL2（Ubuntu 22.04），NullFlux 跑在 WSL，浏览器从 Windows 访问。</div>
+        <div class="ans">前端 UI 在 Windows 没问题，但 OpenFOAM / pvpython 需要 Linux。推荐：Windows + WSL2（Ubuntu 22.04），CFDriver 跑在 WSL，浏览器从 Windows 访问。</div>
       </details>
       <details class="faq-item">
         <summary>遇到 Bug 或想提需求？</summary>
@@ -734,7 +734,7 @@ footer .links{display:flex;gap:24px;flex-wrap:wrap}
 <footer>
   <div class="row">
     <div>
-      <div class="brand" style="margin-bottom:6px"><span class="logo">N</span><span>NullFlux</span></div>
+      <div class="brand" style="margin-bottom:6px"><span class="logo">N</span><span>CFDriver</span></div>
       <span>© 2026 LZF &middot; Proprietary &middot; Built for serious CFD engineers.</span>
     </div>
     <div class="links">
