@@ -190,7 +190,7 @@ source ~/.bashrc
 ### 1. 下载并解压
 
 ```bash
-wget https://github.com/LZF1111/nullflux/releases/download/v0.7.0/cfdriver-linux-sealed.tar.gz
+wget https://github.com/LZF1111/nullflux/releases/download/v0.7.1/cfdriver-linux-sealed.tar.gz
 tar xzf cfdriver-linux-sealed.tar.gz
 cd sealed
 
