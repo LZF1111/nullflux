@@ -1,9 +1,9 @@
 ﻿<div align="center">
 
-# Null𝑭𝒍𝒖𝒙
+# CFDriver
 
-**面向 CFD 与科学计算的中文智能体**
-**用国产模型，打穿 OpenFOAM 工程任务 —— 数据不出本机，越用越懂你**
+**自动化 CFD 仿真智能体 · AI for OpenFOAM / MFIX / LBM / SU2**
+**任意大模型可接入 · 国产模型性价比之选 · 数据不出本机**
 <sub>by **LZF** · 封装发行版 · Linux x64</sub>
 
 [![Node](https://img.shields.io/badge/node-%3E%3D18-43853d)]()
@@ -331,7 +331,7 @@ rm -rf /opt/cfdriver-linux-sealed /etc/systemd/system/cfdriver.service
 
 <div align="center">
 
-**Null𝑭𝒍𝒖𝒙** · *Flow the void, compute the rest.*
+**CFDriver** · *Drive the flow, automate the rest.*
 © 2026 **LZF** — All rights reserved.
 
 </div>
