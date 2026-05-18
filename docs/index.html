@@ -110,10 +110,11 @@ nav.top{
 nav.top .inner{display:flex;align-items:center;justify-content:space-between;height:100%;max-width:1080px;margin:0 auto;padding:0 22px}
 .brand{display:flex;align-items:center;gap:8px;font-weight:600;font-size:17px;letter-spacing:-0.01em;color:var(--fg)}
 .brand .logo{
-  width:26px;height:26px;border-radius:7px;background:var(--fg);
-  display:grid;place-items:center;font-weight:700;font-size:13px;color:#fff;
-  letter-spacing:-0.02em;
+  width:28px;height:28px;display:inline-flex;align-items:center;justify-content:center;
+  color:var(--accent);
 }
+.brand .logo svg{width:100%;height:100%;display:block}
+footer .brand .logo{color:var(--accent)}
 .nav-links{display:flex;gap:28px;align-items:center}
 .nav-links a{color:var(--fg-dim);font-size:13px;font-weight:400;transition:color .2s}
 .nav-links a:hover{color:var(--fg)}
@@ -403,7 +404,7 @@ footer .links{display:flex;gap:24px;flex-wrap:wrap}
 <nav class="top">
   <div class="inner">
     <a href="#top" class="brand">
-      <span class="logo">N</span>
+      <span class="logo" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3 11 C 9 11, 12 18, 18 18 S 27 11, 29 11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M3 17 C 9 17, 12 24, 18 24 S 27 17, 29 17" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.6"/><circle cx="24" cy="9" r="1.6" fill="currentColor"/></svg></span>
       <span>CFDriver</span>
     </a>
     <div class="nav-links">
@@ -734,7 +735,7 @@ footer .links{display:flex;gap:24px;flex-wrap:wrap}
 <footer>
   <div class="row">
     <div>
-      <div class="brand" style="margin-bottom:6px"><span class="logo">N</span><span>CFDriver</span></div>
+      <div class="brand" style="margin-bottom:6px"><span class="logo" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3 11 C 9 11, 12 18, 18 18 S 27 11, 29 11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M3 17 C 9 17, 12 24, 18 24 S 27 17, 29 17" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.6"/><circle cx="24" cy="9" r="1.6" fill="currentColor"/></svg></span><span>CFDriver</span></div>
       <span>© 2026 LZF &middot; Proprietary &middot; Built for serious CFD engineers.</span>
     </div>
     <div class="links">
