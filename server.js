@@ -39,6 +39,10 @@ const DEFAULT_SETTINGS = {
   model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
   provider: 'sf',                  // 'sf' (SiliconFlow / 兼容 OpenAI) | 'copilot' (GitHub Copilot) | 'local' (本地 ollama/llama.cpp/vLLM/LM Studio, 免 key)
   copilotModel: 'gpt-4.1',         // 当 provider=copilot 时使用
+  // 推理模型（Qwen3.6 / GLM-5.1 / DeepSeek-R1 等）的"思考预算"上限（top-level thinking_budget，单位 token）。
+  // 这是治"模型一步想把所有事做完、长时间空转思考"的关键开关：把每一轮思考限定在合理长度，
+  // 配合"小步快走"系统提示，既高效又不丢准确度。0 = 不限制；普通非推理模型会忽略此字段。
+  thinkingBudget: 4096,
   paraviewExe: '',
   paraviewPython: '',
   openfoamBash: '',
@@ -4181,7 +4185,17 @@ async function callLLM(messages, ws, abortSignal, toolsForCall) {
   const base = SETTINGS.baseUrl.replace(/\/+$/, '');
   const url = /\/v1$/.test(base) ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
   const headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SETTINGS.apiKey || 'local'}` };
-  const body = JSON.stringify({ model: SETTINGS.model, messages, tools: TOOLS_FOR_CALL, tool_choice: 'auto', stream: true, stream_options: { include_usage: true }, temperature: 0.2 });
+  const reqBody = { model: SETTINGS.model, messages, tools: TOOLS_FOR_CALL, tool_choice: 'auto', stream: true, stream_options: { include_usage: true }, temperature: 0.2 };
+  // 推理模型思考预算：限制每一轮的 reasoning 长度，避免"一步把所有事想完"式的超长空转思考。
+  // 仅对"推理型"模型（Qwen3 / GLM / DeepSeek-R 系 / 带 think/reason 字样）下发该字段，
+  // 避免非推理模型端点因不认识 thinking_budget 而 400。Copilot 走另一条代码路径。
+  const tb = Number(SETTINGS.thinkingBudget);
+  const mdl = String(SETTINGS.model || '').toLowerCase();
+  const isReasoningModel = /qwen3|glm-?[45]|deepseek-?r|[-/]r1\b|reasoner|think/.test(mdl);
+  if (Number.isFinite(tb) && tb > 0 && isReasoningModel && (SETTINGS.provider || 'sf') !== 'copilot') {
+    reqBody.thinking_budget = tb;
+  }
+  const body = JSON.stringify(reqBody);
   // v0.8.0 连接超时 + 一次重试（首 token 超时由 consumeOpenAIStream 的 IDLE 看门狗保障）
   let lastErr = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
@@ -4477,6 +4491,13 @@ ${SETTINGS.pythonPath ? SETTINGS.pythonPath : '（未选择，将使用 PATH 上
 - 需要规划：用 \`update_todos\` 一次性列 5–20 项待办，**然后立刻 \`write_file\` 落地第一项**，不要停在原地复述。
 - 任务确实完成 → 调 \`task_complete\`，不要用一句"我完成了"代替工具调用。
 - 自检：如果你发现自己又在写"让我…""接下来我要…"却没附 tool_call，**马上停止叙述，改为直接调用工具**。
+
+# 🎯 小步快走，禁止"一口气想完"（效率铁律）
+- 你是**多轮 agent**，不是一次性脚本。**不要在一轮里用超长思考把整个任务从头规划到尾**——那样既慢又容易出错。把大任务拆成"想一小步 → 立刻调一个工具 → 看工具结果 → 再想下一小步"。
+- 每一轮的思考**只需想清楚"下一个具体动作是什么"**，然后立刻调用对应工具。工具返回的真实结果（文件内容、报错、网格数据）比你脑内臆测可靠得多，**用结果驱动下一步**，不要凭空推演十步。
+- 复杂任务先 \`update_todos\` 列清单（这本身就是一个动作），之后**每轮只挑一项落地**，不要试图在一条消息里把所有 todo 都做完。
+- 遇到不确定（路径/参数/库是否存在）→ 直接用 \`list_dir\`/\`read_file\`/\`run_command\` 去**查**，不要在思考里反复假设和纠结。
+- 反模式（禁止）：一轮里写几百字推理把每个文件、每条命令、每种边界情况都预演一遍。**那是浪费——边做边看才对。**
 
 # 联网工具（如启用）
 - web_search(query, top_k?, topic?, time_range?)：通用联网搜索；优先 Tavily/Serper/Brave/SearXNG，无 Key 时回落 HTML 爬取。**找新闻 / 教程 / 文档** 用这个。
@@ -6403,8 +6424,15 @@ function stripHtml(s) {
           .replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
 }
 const UA_DESKTOP = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+// 带超时的 fetch：避免某个搜索引擎不可达时长时间挂起整条爬取链
+async function fetchT(url, init, ms = 9000) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), ms);
+  try { return await fetch(url, { ...(init || {}), signal: ac.signal }); }
+  finally { clearTimeout(timer); }
+}
 async function searchDDG(query, topK) {
-  const r = await fetch('https://html.duckduckgo.com/html/?q=' + encodeURIComponent(query), { headers: { 'User-Agent': UA_DESKTOP, 'Accept': 'text/html', 'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8' } });
+  const r = await fetchT('https://html.duckduckgo.com/html/', { method: 'POST', headers: { 'User-Agent': UA_DESKTOP, 'Accept': 'text/html', 'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8', 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'q=' + encodeURIComponent(query) });
   if (!r.ok) throw new Error('DDG ' + r.status);
   const html = await r.text();
   const out = [];
@@ -6417,21 +6445,31 @@ async function searchDDG(query, topK) {
   return out;
 }
 async function searchBing(query, topK) {
-  const r = await fetch('https://www.bing.com/search?q=' + encodeURIComponent(query) + '&setlang=zh-CN&FORM=QBLH', { headers: { 'User-Agent': UA_DESKTOP, 'Accept': 'text/html', 'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8' } });
+  const r = await fetchT('https://www.bing.com/search?q=' + encodeURIComponent(query) + '&setlang=en-US&count=20&FORM=QBLH', { headers: { 'User-Agent': UA_DESKTOP, 'Accept': 'text/html', 'Accept-Language': 'en-US,en;q=0.9' } });
   if (!r.ok) throw new Error('Bing ' + r.status);
   const html = await r.text();
   const out = [];
-  // Bing 结果项：<li class="b_algo"><h2><a href="...">title</a></h2>...<p ...>snippet</p>
-  const re = /<li class="b_algo"[^>]*>[\s\S]*?<h2><a href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<p[^>]*>([\s\S]*?)<\/p>/g;
-  let m; while ((m = re.exec(html)) && out.length < topK) {
-    out.push({ title: stripHtml(m[2]).slice(0, 160), url: m[1], snippet: stripHtml(m[3]).slice(0, 300) });
+  // Bing 现代结构：每个结果块以 <li class="b_algo" ...> 开头，标题在
+  //   <h2 class=""><a target="_blank" ... href="<真实URL>" h="ID=SERP,...">标题</a></h2>
+  // 注意 href 前有 target 等属性、<h2> 带 class，旧正则因此全部失配 → 改为按块解析 + 容忍属性。
+  const blocks = html.split(/<li class="b_algo"/).slice(1);
+  for (const blk of blocks) {
+    if (out.length >= topK) break;
+    const hm = blk.match(/<h2[^>]*>\s*<a[^>]*?href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/);
+    if (!hm) continue;
+    const url = hm[1];
+    if (/^https?:\/\/(www\.)?bing\.com\//i.test(url)) continue;   // 跳过 bing 内部跳转链
+    const title = stripHtml(hm[2]).slice(0, 160);
+    const pm = blk.match(/<p[^>]*class="[^"]*b_lineclamp[^"]*"[^>]*>([\s\S]*?)<\/p>/) || blk.match(/<p[^>]*>([\s\S]*?)<\/p>/);
+    out.push({ title, url, snippet: pm ? stripHtml(pm[1]).slice(0, 300) : '' });
   }
   return out;
 }
 async function searchBaidu(query, topK) {
-  const r = await fetch('https://www.baidu.com/s?wd=' + encodeURIComponent(query), { headers: { 'User-Agent': UA_DESKTOP, 'Accept': 'text/html', 'Accept-Language': 'zh-CN,zh;q=0.9' } });
+  const r = await fetchT('https://www.baidu.com/s?wd=' + encodeURIComponent(query), { headers: { 'User-Agent': UA_DESKTOP, 'Accept': 'text/html', 'Accept-Language': 'zh-CN,zh;q=0.9' } });
   if (!r.ok) throw new Error('Baidu ' + r.status);
   const html = await r.text();
+  if (/百度安全验证|wappass\.baidu\.com|安全验证/.test(html)) throw new Error('Baidu 触发安全验证（需代理/Cookie）');
   const out = [];
   const re = /<h3[^>]*class="[^"]*c-title[^"]*"[^>]*>[\s\S]*?<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
   let m; while ((m = re.exec(html)) && out.length < topK) {
@@ -6517,10 +6555,10 @@ async function webSearch(query, topK, opts) {
       }
     } catch {}
   }
-  // --- 5. 兜底：HTML 爬取链 ---
-  log('回落到 HTML 爬取链（DuckDuckGo→Bing→Baidu）…');
+  // --- 5. 兜底：HTML 爬取链（Bing 最稳 → DuckDuckGo → Baidu）---
+  log('回落到 HTML 爬取链（Bing→DuckDuckGo→Baidu）…');
   const errs = [];
-  for (const [name, fn] of [['DuckDuckGo', searchDDG], ['Bing', searchBing], ['Baidu', searchBaidu]]) {
+  for (const [name, fn] of [['Bing', searchBing], ['DuckDuckGo', searchDDG], ['Baidu', searchBaidu]]) {
     log(`尝试 ${name} …`);
     try {
       const out = await fn(query, topK);
