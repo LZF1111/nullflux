@@ -4176,11 +4176,35 @@ async function buildUserContent(text, attachments) {
 function _isLocalEndpoint(u) {
   return /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|[^/]*\.local)(:\d+)?/i.test(String(u || ''));
 }
+// 防御：把历史里任何「参数不是合法 JSON」的 tool_call 修正掉。
+// 根因：模型输出被截断（finish_reason=length / 流中断）时，某个 tool_call 的 arguments
+// 字符串会是残缺 JSON（如末尾字符串没闭合）。本地执行时我们 try/catch 回退成 {} 还能跑，
+// 但这条 assistant 消息会被原样塞回历史；下一轮请求时上游(SiliconFlow)对每个
+// tool_call.arguments 做 json.loads 校验 → 残缺 JSON 直接整条请求 400
+// （code 20015 "Expecting ',' delimiter"）。这里在发请求前把残缺参数统一规整为 {}，
+// 与本地执行时的回退一致（该工具实际就是用 {} 跑的，文件并未写入），既保证一致性又不再 400。
+function sanitizeToolCallArgs(messages) {
+  let fixed = 0;
+  for (const m of messages || []) {
+    if (!m || m.role !== 'assistant' || !Array.isArray(m.tool_calls)) continue;
+    for (const tc of m.tool_calls) {
+      if (!tc || !tc.function) continue;
+      const a = tc.function.arguments;
+      // 空参数（无参工具）规整为 {} —— 正常情况，不计入 fixed
+      if (a === undefined || a === null || (typeof a === 'string' && a.trim() === '')) { tc.function.arguments = '{}'; continue; }
+      if (typeof a !== 'string') { tc.function.arguments = '{}'; fixed++; continue; }
+      try { JSON.parse(a); } catch { tc.function.arguments = '{}'; fixed++; }
+    }
+  }
+  return fixed;
+}
 async function callLLM(messages, ws, abortSignal, toolsForCall) {
   if (SETTINGS.provider === 'copilot') return callCopilot(messages, ws, abortSignal, toolsForCall);
   const isLocal = SETTINGS.provider === 'local' || _isLocalEndpoint(SETTINGS.baseUrl);
   if (!SETTINGS.apiKey && !isLocal) throw new Error('未配置 API Key，请到设置中填入');
   const TOOLS_FOR_CALL = toolsForCall || TOOLS;
+  // 发请求前先清洗：修掉任何残缺 JSON 的 tool_call 参数，防止上游 400（见 sanitizeToolCallArgs 注释）
+  try { const nFix = sanitizeToolCallArgs(messages); if (nFix && ws) ws.send(JSON.stringify({ type: 'term', line: `[修复] 检测到 ${nFix} 处被截断的工具调用参数（残缺 JSON）→ 已规整为 {} 避免请求 400` })); } catch {}
   // baseUrl 兼容：已带 /v1 就不再重复拼，否则补 /v1
   const base = SETTINGS.baseUrl.replace(/\/+$/, '');
   const url = /\/v1$/.test(base) ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
@@ -4261,6 +4285,7 @@ async function consumeOpenAIStream(resp, ws) {
   let buffer = '';
   let assistantMsg = { role: 'assistant', content: '', tool_calls: [] };
   let usage = null;
+  let finishReason = null;   // 'stop' | 'length' | 'tool_calls' ...：=length 说明本轮输出被截断，tool_call 参数可能残缺
   // 流空闲看门狗：超过 IDLE_MS 没收到任何 chunk 就主动断开，避免 LLM/代理静默卡住把整个 agent 卡死
   const IDLE_MS = 90_000;
   let idleTimer = null;
@@ -4295,6 +4320,7 @@ async function consumeOpenAIStream(resp, ws) {
         try {
           const j = JSON.parse(data);
           if (j.usage) usage = j.usage;
+          if (j.choices?.[0]?.finish_reason) finishReason = j.choices[0].finish_reason;
           const delta = j.choices?.[0]?.delta; if (!delta) continue;
           // 推理模型的思考流：收到就停掉「等首 token」心跳，显示思考中并把思考内容推给前端（不并入 content，避免污染历史/工具解析）
           if (delta.reasoning_content) { firstChunk = false; if (!reasoningStarted) { reasoningStarted = true; try { ws.send(JSON.stringify({ type: 'agent_phase', phase: 'reasoning', detail: '模型思考中（推理模型）' })); } catch {} } try { ws.send(JSON.stringify({ type: 'reasoning', text: delta.reasoning_content })); } catch {} }
@@ -4320,6 +4346,7 @@ async function consumeOpenAIStream(resp, ws) {
         try {
           const j = JSON.parse(data);
           if (j.usage) usage = j.usage;
+          if (j.choices?.[0]?.finish_reason) finishReason = j.choices[0].finish_reason;
           const delta = j.choices?.[0]?.delta;
           if (delta) {
             if (delta.reasoning_content) { firstChunk = false; if (!reasoningStarted) { reasoningStarted = true; try { ws.send(JSON.stringify({ type: 'agent_phase', phase: 'reasoning', detail: '模型思考中（推理模型）' })); } catch {} } try { ws.send(JSON.stringify({ type: 'reasoning', text: delta.reasoning_content })); } catch {} }
@@ -4344,6 +4371,14 @@ async function consumeOpenAIStream(resp, ws) {
     if (phaseTimer) clearInterval(phaseTimer);
   }
   if (idleAborted) throw new Error(`LLM 流空闲超时 ${IDLE_MS/1000}s（已自动中止，可重试）`);
+  // 流结束后立刻规整本轮 tool_call 参数：若被截断成残缺 JSON，就地修成 {}，
+  // 保证不把残缺 JSON 塞进历史（否则下一轮请求会被上游 json.loads 校验打回 400）。
+  if (assistantMsg.tool_calls.length) {
+    try {
+      const nFix = sanitizeToolCallArgs([assistantMsg]);
+      if (finishReason === 'length') { try { ws.send(JSON.stringify({ type: 'term', line: `[警告] 本轮输出被截断（finish_reason=length，达长度上限）${nFix ? `，${nFix} 处工具参数残缺已规整为 {}` : ''}。如频繁出现可调大输出上限或缩短上下文。` })); } catch {} }
+    } catch {}
+  }
   if (assistantMsg.tool_calls.length === 0) delete assistantMsg.tool_calls;
   if (usage) ws.send(JSON.stringify({ type: 'usage', usage }));
   return assistantMsg;
