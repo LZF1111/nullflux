@@ -4185,16 +4185,35 @@ function _isLocalEndpoint(u) {
 // 与本地执行时的回退一致（该工具实际就是用 {} 跑的，文件并未写入），既保证一致性又不再 400。
 function sanitizeToolCallArgs(messages) {
   let fixed = 0;
-  for (const m of messages || []) {
+  const arr = messages || [];
+  for (let i = 0; i < arr.length; i++) {
+    const m = arr[i];
     if (!m || m.role !== 'assistant' || !Array.isArray(m.tool_calls)) continue;
+    // 1) 去掉稀疏洞/非对象项：流截断时 index 跳号会留洞，JSON.stringify 把洞序列化成 null → 上游 400
+    const before = m.tool_calls.length;
+    m.tool_calls = m.tool_calls.filter(tc => tc && typeof tc === 'object');
+    if (m.tool_calls.length !== before) fixed += before - m.tool_calls.length;
     for (const tc of m.tool_calls) {
-      if (!tc || !tc.function) continue;
+      // 2) 截断可能让 function/name/id 缺失：补占位，保证上游 schema 校验通过
+      if (!tc.function || typeof tc.function !== 'object') { tc.function = { name: 'unknown_tool', arguments: '{}' }; fixed++; }
+      if (!tc.function.name) { tc.function.name = 'unknown_tool'; fixed++; }
+      if (!tc.id) {
+        const nid = 'call_fix_' + Math.random().toString(36).slice(2, 10);
+        // 同步修正紧随其后、指向空 id 的 tool 响应，保持配对不破
+        for (let j = i + 1; j < arr.length && arr[j] && arr[j].role === 'tool'; j++) {
+          if (!arr[j].tool_call_id) { arr[j].tool_call_id = nid; break; }
+        }
+        tc.id = nid; fixed++;
+      }
+      // 3) 参数必须是合法 JSON 字符串
       const a = tc.function.arguments;
       // 空参数（无参工具）规整为 {} —— 正常情况，不计入 fixed
       if (a === undefined || a === null || (typeof a === 'string' && a.trim() === '')) { tc.function.arguments = '{}'; continue; }
       if (typeof a !== 'string') { tc.function.arguments = '{}'; fixed++; continue; }
       try { JSON.parse(a); } catch { tc.function.arguments = '{}'; fixed++; }
     }
+    // 全被清空则整个字段删掉（部分端点拒绝空 tool_calls 数组）
+    if (m.tool_calls.length === 0) delete m.tool_calls;
   }
   return fixed;
 }
@@ -4328,7 +4347,8 @@ async function consumeOpenAIStream(resp, ws) {
           if (delta.tool_calls) {
             if (firstChunk) { firstChunk = false; try { ws.send(JSON.stringify({ type: 'agent_phase', phase: 'streaming', detail: 'LLM 决定调用工具' })); } catch {} }
             for (const tc of delta.tool_calls) {
-              const idx = tc.index;
+              // 部分端点（本地 llama.cpp/vLLM 等）流式 tool_call 不带 index：带 id 视为新调用，否则续写最后一个
+              const idx = (typeof tc.index === 'number') ? tc.index : (tc.id ? assistantMsg.tool_calls.length : Math.max(0, assistantMsg.tool_calls.length - 1));
               if (!assistantMsg.tool_calls[idx]) assistantMsg.tool_calls[idx] = { id: tc.id || '', type: 'function', function: { name: '', arguments: '' } };
               const slot = assistantMsg.tool_calls[idx];
               if (tc.id) slot.id = tc.id;
@@ -4354,7 +4374,8 @@ async function consumeOpenAIStream(resp, ws) {
             if (delta.tool_calls) {
               if (firstChunk) { firstChunk = false; try { ws.send(JSON.stringify({ type: 'agent_phase', phase: 'streaming', detail: 'LLM 决定调用工具' })); } catch {} }
               for (const tc of delta.tool_calls) {
-                const idx = tc.index;
+                // 同上：无 index 时按「带 id=新调用，否则续写最后一个」回退
+                const idx = (typeof tc.index === 'number') ? tc.index : (tc.id ? assistantMsg.tool_calls.length : Math.max(0, assistantMsg.tool_calls.length - 1));
                 if (!assistantMsg.tool_calls[idx]) assistantMsg.tool_calls[idx] = { id: tc.id || '', type: 'function', function: { name: '', arguments: '' } };
                 const slot = assistantMsg.tool_calls[idx];
                 if (tc.id) slot.id = tc.id;
@@ -4379,7 +4400,8 @@ async function consumeOpenAIStream(resp, ws) {
       if (finishReason === 'length') { try { ws.send(JSON.stringify({ type: 'term', line: `[警告] 本轮输出被截断（finish_reason=length，达长度上限）${nFix ? `，${nFix} 处工具参数残缺已规整为 {}` : ''}。如频繁出现可调大输出上限或缩短上下文。` })); } catch {} }
     } catch {}
   }
-  if (assistantMsg.tool_calls.length === 0) delete assistantMsg.tool_calls;
+  // 注意 sanitize 可能已把空 tool_calls 字段整个删掉，需先判存在再取 length
+  if (Array.isArray(assistantMsg.tool_calls) && assistantMsg.tool_calls.length === 0) delete assistantMsg.tool_calls;
   if (usage) ws.send(JSON.stringify({ type: 'usage', usage }));
   return assistantMsg;
 }
@@ -4629,6 +4651,113 @@ ${SETTINGS.pythonPath ? SETTINGS.pythonPath : '（未选择，将使用 PATH 上
 // and are referenced from FOAM_PROMPT / MFIX_PROMPT / LBM_PROMPT directly when those Beta modes are enabled.
 
 const sessions = new Map();
+
+// ====================== 任务持久化（多任务 · 跨刷新/重启/换模型保留上下文） ======================
+// 以前 session 跟 WebSocket 绑定：刷新页面/换模型 = 新连接 = 上下文全丢。
+// 现在把「任务」落盘到 tasks/<id>.json（LLM messages + todos + 标题），连接只是挂载到当前任务：
+// 刷新/重启/换模型都接着原上下文继续；还能新建/切换/删除多个任务。
+const TASKS_DIR = path.join(__dirname, 'tasks');
+const TASKS = new Map();           // taskId -> { id, title, createdAt, updatedAt, messages, todos }（_开头字段为运行时不落盘）
+let CURRENT_TASK_ID = null;
+function _taskFile(id) { return path.join(TASKS_DIR, id + '.json'); }
+function _newTaskId() { return 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+function loadAllTasks() {
+  try { fssync.mkdirSync(TASKS_DIR, { recursive: true }); } catch {}
+  try {
+    for (const f of fssync.readdirSync(TASKS_DIR)) {
+      if (!f.endsWith('.json') || f.startsWith('_')) continue;
+      try {
+        const t = JSON.parse(fssync.readFileSync(path.join(TASKS_DIR, f), 'utf8'));
+        if (t && t.id) {
+          t.messages = Array.isArray(t.messages) ? t.messages : [];
+          t.todos = Array.isArray(t.todos) ? t.todos : [];
+          TASKS.set(t.id, t);
+        }
+      } catch {}
+    }
+    try { CURRENT_TASK_ID = JSON.parse(fssync.readFileSync(path.join(TASKS_DIR, '_meta.json'), 'utf8')).currentId || null; } catch {}
+    if (!TASKS.has(CURRENT_TASK_ID)) CURRENT_TASK_ID = null;
+  } catch {}
+}
+function _saveTaskMeta() { try { fssync.writeFileSync(path.join(TASKS_DIR, '_meta.json'), JSON.stringify({ currentId: CURRENT_TASK_ID })); } catch {} }
+function persistTaskNow(task) {
+  if (!task) return;
+  if (task._saveTimer) { clearTimeout(task._saveTimer); task._saveTimer = null; }
+  try {
+    fssync.mkdirSync(TASKS_DIR, { recursive: true });
+    const clean = {}; for (const k of Object.keys(task)) if (!k.startsWith('_')) clean[k] = task[k];
+    // 大图附件（base64 dataUrl）不落盘，否则单文件可能几十 MB；重启后图片上下文丢失可接受
+    const json = JSON.stringify(clean, (k, v) =>
+      (k === 'image_url' && v && typeof v.url === 'string' && v.url.length > 100_000) ? { url: '[图片过大未存盘]' } : v);
+    fssync.writeFileSync(_taskFile(task.id), json);
+  } catch (e) { console.warn('[tasks] 保存失败:', e.message); }
+}
+function schedulePersistTask(task) {
+  if (!task || task._saveTimer) return;
+  task._saveTimer = setTimeout(() => { task._saveTimer = null; persistTaskNow(task); }, 3000);
+}
+function createTask(title) {
+  const t = { id: _newTaskId(), title: (title || '新任务').slice(0, 60), createdAt: Date.now(), updatedAt: Date.now(), messages: [], todos: [] };
+  TASKS.set(t.id, t); CURRENT_TASK_ID = t.id; _saveTaskMeta(); persistTaskNow(t);
+  return t;
+}
+function ensureCurrentTask() {
+  let t = TASKS.get(CURRENT_TASK_ID);
+  if (!t) {
+    // 取最近更新的任务；一个都没有就新建
+    t = [...TASKS.values()].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0] || createTask();
+    CURRENT_TASK_ID = t.id; _saveTaskMeta();
+  }
+  return t;
+}
+function attachSessionToTask(s, task) {
+  s.task = task;
+  if (!Array.isArray(task.messages) || task.messages.length === 0) task.messages = [{ role: 'system', content: SYSTEM_PROMPT_BASE(WORKSPACE) }];
+  s.messages = task.messages;             // 同一数组引用：session 写 = 任务写
+  s.todos = Array.isArray(task.todos) ? task.todos : [];
+  task.todos = s.todos;
+}
+function syncTaskFromSession(s) {
+  const t = s && s.task; if (!t) return;
+  t.messages = s.messages;                // autoCompact 可能重建过数组引用，这里收敛回任务
+  t.todos = s.todos || [];
+  t.updatedAt = Date.now();
+}
+function persistSession(s, now) {
+  if (!s || !s.task) return;
+  syncTaskFromSession(s);
+  (now ? persistTaskNow : schedulePersistTask)(s.task);
+}
+function taskListPayload() {
+  const list = [...TASKS.values()].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+    .map(t => ({ id: t.id, title: t.title, updatedAt: t.updatedAt, msgCount: (t.messages || []).length }));
+  return { type: 'task_state', list, currentId: CURRENT_TASK_ID };
+}
+function broadcastTaskState() { const p = JSON.stringify(taskListPayload()); for (const c of allClients) { try { if (c.readyState === 1) c.send(p); } catch {} } }
+// 从 LLM messages 推导前端可回放的对话事件（不另存一份转写，零额外簿记）
+function taskHistoryPayload(task) {
+  const ev = [];
+  for (const m of (task.messages || [])) {
+    if (!m) continue;
+    if (m.role === 'user') {
+      let text = typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? ((m.content.find(p => p && p.type === 'text') || {}).text || '') : '');
+      text = String(text);
+      if (/^\[(系统|提示|SYSTEM)/.test(text)) continue;          // 反空转/循环守卫注入的伪 user 消息不回放
+      if (text.startsWith('以下是之前会话的压缩总结')) { ev.push({ k: 'sys', text: '（更早的历史已自动压缩为摘要，模型上下文中仍保留）' }); continue; }
+      ev.push({ k: 'user', text: text.slice(0, 4000) });
+    } else if (m.role === 'assistant') {
+      const t = (typeof m.content === 'string' ? m.content : '').trim();
+      if (t) ev.push({ k: 'ai', text: t.slice(0, 8000) });
+      for (const tc of (m.tool_calls || [])) ev.push({ k: 'tool', name: (tc.function && tc.function.name) || '?', args: String((tc.function && tc.function.arguments) || '').slice(0, 400) });
+    } else if (m.role === 'tool') {
+      // 把结果挂回最近一个还没有结果的 tool 事件
+      for (let i = ev.length - 1; i >= 0; i--) { if (ev[i].k === 'tool' && ev[i].result === undefined) { ev[i].result = String(m.content || '').slice(0, 600); break; } }
+    }
+  }
+  return { type: 'task_history', taskId: task.id, title: task.title, events: ev.slice(-300) };
+}
+loadAllTasks();
+
 
 // ====================== 工具执行进度心跳（让用户看见 agent 在干啥） ======================
 // 在每次 execTool 周围发出 ⏳ 开始 / 周期性 …仍在运行 Ns / ✔ 完成 用时 的终端日志。
@@ -5957,6 +6086,26 @@ async function runAgent(ws, userText, attachments) {
   session._runSeq = (session._runSeq || 0) + 1;
   const myRunSeq = session._runSeq;
   session._running = true;
+  // 任务级并发守卫：同一任务可能被多个连接挂载（刷新后旧连接的 run 可能还活着）
+  const task = session.task;
+  if (task) {
+    const other = task._runningSession;
+    if (other && other !== session && other._running) {
+      const otherAlive = other._ws && other._ws.readyState === 1;
+      if (otherAlive) {
+        session._running = false;
+        try { ws.send(JSON.stringify({ type: 'term', line: '[任务] 该任务正在另一个窗口运行，请先在那边停止' })); } catch {}
+        try { ws.send(JSON.stringify({ type: 'agent_end' })); } catch {}
+        return;
+      }
+      // 旧连接已断（刷新遗留）→ 中止它，接管任务
+      other.aborted = true;
+      if (other.aborter) try { other.aborter.abort(); } catch {}
+      const t0g = Date.now();
+      while (other._running && Date.now() - t0g < 3000) { await new Promise(r => setTimeout(r, 50)); }
+    }
+    task._runningSession = session;
+  }
   newCheckpoint(session, userText.slice(0, 40) || '新任务');
   broadcastCheckpoints(ws);
   const userContent = await buildUserContent(userText, attachments);
@@ -6081,6 +6230,7 @@ async function runAgent(ws, userText, attachments) {
               recentFP.push(fp(name, (() => { try { return JSON.parse(tc.function.arguments || '{}'); } catch { return {}; } })()));
               if (recentFP.length > 12) recentFP.shift();
             }
+            persistSession(session);   // 并行批结束落盘（防抖）
             cursor = end;
             if (session.aborted) { stop = true; break; }
             if (session.taskComplete) { stop = true; break; }
@@ -6112,6 +6262,7 @@ async function runAgent(ws, userText, attachments) {
           session.messages.push({ role: 'tool', tool_call_id: tc.id, content: clipForHistory(result) });
           captureToolSignal(session, name, result, args);
           respondedIds.add(tc.id);
+          persistSession(session);   // 边跑边落盘（防抖 3s），服务崩溃/重启也不丢上下文
           if (MODIFYING.has(name)) broadcastCheckpoints(ws);
           // 重复检测：同一工具+同一参数 连续调用
           recentFP.push(fp(name, args)); if (recentFP.length > 12) recentFP.shift();
@@ -6158,6 +6309,9 @@ async function runAgent(ws, userText, attachments) {
   } finally {
     console.log(`[runAgent #${myRunSeq}] ended (aborted=${session.aborted}, taskComplete=${session.taskComplete})`);
     session.currentCheckpoint = null; session.aborter = null; session._running = false;
+    if (session.task && session.task._runningSession === session) session.task._runningSession = null;
+    persistSession(session, true);   // 轮次结束立即落盘任务上下文
+    broadcastTaskState();
     // 自进化：本轮若被 verifier 盖章通过，提示可沉淀经验（opt-in，不自动写库）
     try {
       const draft = SkillLib.draftFromTrajectory({ userText, messages: session.messages, modes: { foam: session.foamMode, mfix: session.mfixMode, lbm: session.lbmMode }, facts: workMemToSkillFill(session) });
@@ -7991,8 +8145,13 @@ wss.on('connection', (ws) => {
     // V4: 人在回路 — 当 agent 抛出 1)/2)/3) 编号选项且无 tool_call 时，置 true；下一条 user 消息会清零
     awaitingUserChoice: false
   };
+  session._ws = ws;
+  // 挂载到当前任务：刷新/换模型/重启后接着原上下文继续（任务持久化）
+  attachSessionToTask(session, ensureCurrentTask());
   sessions.set(ws, session); allClients.add(ws);
   ws.send(JSON.stringify({ type: 'tools_state', enabled: [...session.enabledTools], groups: TOOL_GROUPS }));
+  ws.send(JSON.stringify(taskListPayload()));
+  try { ws.send(JSON.stringify(taskHistoryPayload(session.task))); } catch {}
   buildTree().then(t => ws.send(JSON.stringify({ type: 'tree', tree: t }))).catch(()=>{});
   broadcastCheckpoints(ws); broadcastEdits(ws); broadcastTodos(ws);
   ws.send(JSON.stringify({ type: 'sim_state', enabled: false, running: !!PV_STATE.pid }));
@@ -8017,7 +8176,57 @@ wss.on('connection', (ws) => {
   ws.on('message', async (raw) => {
     let m; try { m = JSON.parse(raw.toString()); } catch { return; }
     const s = sessions.get(ws); if (!s) return;
-    if (m.type === 'user') { s.awaitingUserChoice = false; s._pendingUserText = m.text; s.messages[0] = { role: 'system', content: buildSystemPrompt(s) }; runAgent(ws, m.text, m.attachments || []); }
+    if (m.type === 'user') {
+      s.awaitingUserChoice = false; s._pendingUserText = m.text;
+      // 首条用户消息自动作为任务标题
+      if (s.task && (s.task.title === '新任务' || !s.task.title) && m.text) { s.task.title = String(m.text).slice(0, 40); broadcastTaskState(); }
+      s.messages[0] = { role: 'system', content: buildSystemPrompt(s) };
+      runAgent(ws, m.text, m.attachments || []);
+    }
+    else if (m.type === 'task_new') {
+      if (s._running) { ws.send(JSON.stringify({ type: 'term', line: '[任务] 当前任务运行中，请先停止再新建' })); return; }
+      persistSession(s, true);
+      const t = createTask(typeof m.title === 'string' && m.title.trim() ? m.title.trim() : '新任务');
+      attachSessionToTask(s, t);
+      s.checkpoints = []; s.pendingEdits = []; s.taskComplete = false; s.workMem = null;
+      broadcastTaskState();
+      ws.send(JSON.stringify(taskHistoryPayload(t)));
+      broadcastCheckpoints(ws); broadcastEdits(ws); broadcastTodos(ws);
+      ws.send(JSON.stringify({ type: 'term', line: `[任务] 已新建「${t.title}」` }));
+    }
+    else if (m.type === 'task_switch') {
+      if (s._running) { ws.send(JSON.stringify({ type: 'term', line: '[任务] 当前任务运行中，请先停止再切换' })); return; }
+      const t = TASKS.get(m.id);
+      if (!t) { ws.send(JSON.stringify({ type: 'term', line: '[任务] 不存在：' + m.id })); return; }
+      persistSession(s, true);
+      CURRENT_TASK_ID = t.id; _saveTaskMeta();
+      attachSessionToTask(s, t);
+      s.checkpoints = []; s.pendingEdits = []; s.taskComplete = false; s.workMem = null;
+      broadcastTaskState();
+      ws.send(JSON.stringify(taskHistoryPayload(t)));
+      broadcastCheckpoints(ws); broadcastEdits(ws); broadcastTodos(ws);
+      ws.send(JSON.stringify({ type: 'term', line: `[任务] 已切换到「${t.title}」（${t.messages.length} 条上下文）` }));
+    }
+    else if (m.type === 'task_delete') {
+      const t = TASKS.get(m.id);
+      if (!t) return;
+      if (t._runningSession && t._runningSession._running) { ws.send(JSON.stringify({ type: 'term', line: '[任务] 该任务运行中，请先停止再删除' })); return; }
+      TASKS.delete(m.id);
+      try { fssync.unlinkSync(_taskFile(m.id)); } catch {}
+      if (CURRENT_TASK_ID === m.id) {
+        const t2 = ensureCurrentTask();             // 退到最近的其他任务，没有则新建
+        attachSessionToTask(s, t2);
+        s.checkpoints = []; s.pendingEdits = []; s.taskComplete = false; s.workMem = null;
+        ws.send(JSON.stringify(taskHistoryPayload(t2)));
+        broadcastCheckpoints(ws); broadcastEdits(ws); broadcastTodos(ws);
+      }
+      broadcastTaskState();
+      ws.send(JSON.stringify({ type: 'term', line: `[任务] 已删除「${t.title}」` }));
+    }
+    else if (m.type === 'task_rename') {
+      const t = TASKS.get(m.id);
+      if (t && typeof m.title === 'string' && m.title.trim()) { t.title = m.title.trim().slice(0, 60); persistTaskNow(t); broadcastTaskState(); }
+    }
     else if (m.type === 'set_auto') s.autoMode = !!m.value;
     else if (m.type === 'skill_save_ui') {
       // 自进化沉淀卡：用户在 UI 确认后把本轮经验存入技能库（已经 verifier 盖章，force 落盘）
@@ -8163,6 +8372,7 @@ wss.on('connection', (ws) => {
     } else if (m.type === 'reset') {
       s.messages = [{ role: 'system', content: buildSystemPrompt(s) }];
       s.checkpoints = []; s.pendingEdits = []; s.todos = []; s.taskComplete = false;
+      persistSession(s, true);   // 同步清空落盘的任务上下文
       ws.send(JSON.stringify({ type: 'reset_done' }));
       broadcastCheckpoints(ws); broadcastEdits(ws); broadcastTodos(ws);
     } else if (m.type === 'compact') {
