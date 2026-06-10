@@ -4728,12 +4728,18 @@ function persistSession(s, now) {
   syncTaskFromSession(s);
   (now ? persistTaskNow : schedulePersistTask)(s.task);
 }
-function taskListPayload() {
+function taskListPayload(forSession) {
   const list = [...TASKS.values()].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
     .map(t => ({ id: t.id, title: t.title, updatedAt: t.updatedAt, msgCount: (t.messages || []).length }));
-  return { type: 'task_state', list, currentId: CURRENT_TASK_ID };
+  // currentId 按连接返回：每个窗口显示自己挂载的任务，多窗口可并行跑不同任务互不干扰
+  const currentId = (forSession && forSession.task && forSession.task.id) || CURRENT_TASK_ID;
+  return { type: 'task_state', list, currentId };
 }
-function broadcastTaskState() { const p = JSON.stringify(taskListPayload()); for (const c of allClients) { try { if (c.readyState === 1) c.send(p); } catch {} } }
+function broadcastTaskState() {
+  for (const c of allClients) {
+    try { if (c.readyState === 1) c.send(JSON.stringify(taskListPayload(sessions.get(c)))); } catch {}
+  }
+}
 // 从 LLM messages 推导前端可回放的对话事件（不另存一份转写，零额外簿记）
 function taskHistoryPayload(task) {
   const ev = [];
@@ -8171,7 +8177,7 @@ wss.on('connection', (ws) => {
   attachSessionToTask(session, ensureCurrentTask());
   sessions.set(ws, session); allClients.add(ws);
   ws.send(JSON.stringify({ type: 'tools_state', enabled: [...session.enabledTools], groups: TOOL_GROUPS }));
-  ws.send(JSON.stringify(taskListPayload()));
+  ws.send(JSON.stringify(taskListPayload(session)));
   try { ws.send(JSON.stringify(taskHistoryPayload(session.task))); } catch {}
   buildTree().then(t => ws.send(JSON.stringify({ type: 'tree', tree: t }))).catch(()=>{});
   broadcastCheckpoints(ws); broadcastEdits(ws); broadcastTodos(ws);
