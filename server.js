@@ -6136,6 +6136,17 @@ async function runAgent(ws, userText, attachments) {
     }
     for (let step = 0; step < MAX_AUTO_STEPS; step++) {
       if (session.aborted) { ws.send(JSON.stringify({ type: 'term', line: '[已停止]' })); break; }
+      // 🧭 Codex 式引导：把运行中用户插入的新消息注入本步上下文，智能体据此调整后续思路
+      if (Array.isArray(session._steerQueue) && session._steerQueue.length) {
+        const steers = session._steerQueue.splice(0);
+        for (const st of steers) {
+          const content = await buildUserContent(`【用户引导 · 运行中插入】${st.text}\n（请把这条新要求纳入当前任务：必要时用 update_todos 调整计划和后续步骤，不要从头重来）`, st.attachments || []);
+          session.messages.push({ role: 'user', content });
+        }
+        noToolStreak = 0;
+        ws.send(JSON.stringify({ type: 'term', line: `[引导] 已把 ${steers.length} 条新输入注入智能体上下文，后续步骤将据此调整` }));
+        persistSession(session);
+      }
       autoCompactIfNeeded(session, ws);
       ws.send(JSON.stringify({ type: 'assistant_start' }));
       ws.send(JSON.stringify({ type: 'agent_phase', phase: 'llm_thinking', detail: `调用 LLM (第 ${step+1} 步)` }));
@@ -6304,6 +6315,8 @@ async function runAgent(ws, userText, attachments) {
         ws.send(JSON.stringify({ type: 'term', line: '[反空转] Agent 连续多轮只规划、不调用工具，已暂停本轮。请补充更明确的指令或点继续。' }));
         break;
       }
+      // 正常收尾前若还有运行中插入的引导 → 不收尾，继续循环消费新输入
+      if (Array.isArray(session._steerQueue) && session._steerQueue.length) continue;
       break;
     }
   } finally {
@@ -6324,6 +6337,14 @@ async function runAgent(ws, userText, attachments) {
       }
       session._novelErrors = [];
     } catch {}
+    // 运行刚结束时还排着队的引导（收尾/完成瞬间发来的）→ 作为新一轮继续，不丢消息
+    const leftoverSteers = Array.isArray(session._steerQueue) ? session._steerQueue.splice(0) : [];
+    if (leftoverSteers.length && !session.aborted && ws.readyState === 1) {
+      const txt = leftoverSteers.map(x => x.text).join('\n');
+      const atts = leftoverSteers.flatMap(x => x.attachments || []);
+      ws.send(JSON.stringify({ type: 'term', line: '[引导] 上一轮刚结束，你的新输入作为新一轮继续' }));
+      setImmediate(() => { try { session.messages[0] = { role: 'system', content: buildSystemPrompt(session) }; runAgent(ws, txt, atts); } catch (e) { console.warn('[steer] 续跑失败:', e.message); } });
+    }
     ws.send(JSON.stringify({ type: 'agent_end' }));
     broadcastCheckpoints(ws);
   }
@@ -8178,6 +8199,12 @@ wss.on('connection', (ws) => {
     const s = sessions.get(ws); if (!s) return;
     if (m.type === 'user') {
       s.awaitingUserChoice = false; s._pendingUserText = m.text;
+      // 🧭 Codex 式引导：智能体运行中用户发来的新消息不打断当前工作，排队到下一步推理时注入
+      if (s._running) {
+        (s._steerQueue || (s._steerQueue = [])).push({ text: m.text, attachments: m.attachments || [] });
+        ws.send(JSON.stringify({ type: 'term', line: '[引导] 已收到你的新输入，将在智能体下一步推理时注入（不打断当前工作）' }));
+        return;
+      }
       // 首条用户消息自动作为任务标题
       if (s.task && (s.task.title === '新任务' || !s.task.title) && m.text) { s.task.title = String(m.text).slice(0, 40); broadcastTaskState(); }
       s.messages[0] = { role: 'system', content: buildSystemPrompt(s) };
