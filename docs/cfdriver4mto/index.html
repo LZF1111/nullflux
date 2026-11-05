@@ -3,325 +3,288 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CFDriver4MTO · 把一篇流化床论文从头算到尾的 CFD 智能体</title>
+<title>CFDriver4MTO · 替你跑完几天几夜 CFD 的智能体</title>
 <meta name="description" content="CFDriver4MTO：面向论文复现的 CFD 智能体。中试 DMTO 三维双流体八组分反应，出口 KPI 与原文偏差 0.4 % 以内；断线续跑、证据链验收、分布器反演。">
 <link rel="canonical" href="https://lzf1111.github.io/nullflux/cfdriver4mto/">
-<meta property="og:title" content="CFDriver4MTO · 会自己把论文算完的 CFD 智能体">
-<meta property="og:description" content="中试 DMTO 三维反应流复现：数字全部实测，没做到的也写在页面上。">
-<meta property="og:image" content="https://lzf1111.github.io/nullflux/cfdriver4mto/img/rsi_report.png">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&family=Noto+Serif+SC:wght@500;700&display=swap" rel="stylesheet">
+<meta property="og:title" content="CFDriver4MTO · 替你跑完几天几夜 CFD 的智能体">
+<meta property="og:description" content="中试 DMTO 三维反应流复现，出口 KPI 与原文差 0.4 % 以内。数字全部实测。">
+<meta property="og:image" content="https://lzf1111.github.io/nullflux/cfdriver4mto/img/fig_fields.png">
 <style>
 :root{
-  --ink:#0c0d0f;--ink2:#131417;--ink3:#1b1c20;--rule:#2a2a2e;
-  --bone:#ece6d8;--bone2:#c9c3b5;--mut:#8b8678;
-  --ember:#e8743b;--data:#7fb4c9;
-  --serif:"Instrument Serif","Noto Serif SC","Songti SC",serif;
-  --cjk:"Noto Serif SC","Songti SC","STSong",serif;
-  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
-  --mono:"JetBrains Mono",ui-monospace,Consolas,monospace;
+  --bg:#0a0b0e;--bg2:#111318;--bg3:#181b22;--line:#252934;--line2:#343a48;
+  --fg:#eef0f4;--fg2:#b6bccb;--mut:#7d8496;
+  --acc:#f5c542;--acc2:#3fb5a8;--blue:#5aa0ff;--warn:#ff8a5b;
+  --sans:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  --mono:ui-monospace,"JetBrains Mono",Consolas,monospace;
 }
 *{box-sizing:border-box}
-html{scroll-behavior:smooth;background:var(--ink)}
-body{margin:0;color:var(--bone);font:17px/1.75 var(--sans);-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+html{scroll-behavior:smooth;background:var(--bg)}
+body{margin:0;color:var(--fg);font:16.5px/1.7 var(--sans);-webkit-font-smoothing:antialiased}
 a{color:inherit}
-:focus-visible{outline:2px solid var(--ember);outline-offset:3px;border-radius:2px}
-.w{max-width:1180px;margin:0 auto;padding:0 32px}
-.skip:focus{left:16px!important;top:14px;z-index:20;background:var(--bone);color:var(--ink);padding:6px 12px;border-radius:4px}
-.nav{position:sticky;top:0;z-index:10;background:rgba(12,13,15,.82);backdrop-filter:blur(10px);border-bottom:1px solid var(--rule)}
-.nav .w{display:flex;align-items:center;height:60px;gap:28px}
-.mark{font:400 24px/1 var(--serif);text-decoration:none;letter-spacing:.005em}
-.mark span{color:var(--ember)}
+img{display:block;max-width:100%;height:auto}
+:focus-visible{outline:2px solid var(--acc);outline-offset:3px;border-radius:4px}
+.w{max-width:1200px;margin:0 auto;padding:0 32px}
+.skip{position:absolute;left:-9999px}.skip:focus{left:16px;top:14px;z-index:30;background:var(--fg);color:var(--bg);padding:6px 12px;border-radius:6px}
+
+.nav{position:sticky;top:0;z-index:20;background:rgba(10,11,14,.78);backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
+.nav .w{display:flex;align-items:center;height:62px;gap:26px}
+.mark{display:flex;align-items:center;gap:10px;font-weight:700;font-size:17px;text-decoration:none;letter-spacing:-.01em}
+.mark i{width:22px;height:22px;border-radius:6px;background:linear-gradient(135deg,var(--acc),var(--acc2));display:block}
+.mark span{color:var(--mut);font-weight:500}
 .nav .sp{flex:1}
-.nav a.l{font-size:14px;color:var(--mut);text-decoration:none}
-.nav a.l:hover{color:var(--bone)}
-.nav a.b{font-size:14px;text-decoration:none;border:1px solid var(--rule);padding:6px 14px;border-radius:999px}
-.nav a.b:hover{border-color:var(--bone2)}
+.nav a.l{font-size:14px;color:var(--fg2);text-decoration:none}.nav a.l:hover{color:var(--fg)}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:12px 22px;border-radius:10px;font-size:15px;font-weight:600;text-decoration:none;border:1px solid var(--line2);transition:background .15s,border-color .15s}
+.btn.p{background:var(--acc);color:#111;border-color:var(--acc)}.btn.p:hover{background:#ffd75e}
+.btn.g:hover{border-color:var(--fg2);background:var(--bg2)}
+.btn.s{padding:8px 16px;font-size:14px}
 
-/* 首屏：左文案，右反应器剖面 */
-.hero{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(320px,.9fr);gap:56px;align-items:center;min-height:calc(100vh - 60px);padding-top:56px;padding-bottom:72px}
-.cite{font:400 14px/1.5 var(--mono);color:var(--mut);margin:0 0 26px}
-.cite b{color:var(--bone2);font-weight:500}
-h1{font:700 clamp(36px,4.6vw,66px)/1.16 var(--cjk);letter-spacing:-.01em;margin:0 0 28px}
-.lead{font-size:clamp(17px,1.5vw,19px);color:var(--bone2);max-width:34em;margin:0}
-.acts{display:flex;gap:14px;flex-wrap:wrap;margin-top:40px}
-.btn{display:inline-flex;align-items:center;gap:10px;padding:13px 22px;border-radius:999px;font-size:15px;font-weight:600;text-decoration:none;border:1px solid var(--rule)}
-.btn.p{background:var(--bone);color:var(--ink);border-color:var(--bone)}
-.btn.p:hover{background:#fff}
-.btn.g:hover{border-color:var(--bone2)}
-.col{position:relative;height:min(78vh,720px);min-height:520px}
-#bed{position:absolute;inset:0;width:100%;height:100%}
-.col figcaption{position:absolute;left:0;right:0;bottom:-34px;font:400 12.5px/1.5 var(--mono);color:var(--mut);text-align:center}
-section{padding:112px 0;border-top:1px solid var(--rule)}
-h2{font:700 clamp(30px,3.6vw,46px)/1.2 var(--cjk);margin:0 0 20px;max-width:18em}
-.intro{color:var(--bone2);max-width:36em;margin:0}
-.src{font:400 13px/1.6 var(--mono);color:var(--mut);margin-top:18px}
-code{font:400 .86em var(--mono);color:var(--bone);background:var(--ink3);padding:1px 6px;border-radius:4px}
+/* 首屏 */
+.hero{position:relative;overflow:hidden;padding:88px 0 40px}
+.hero:before{content:"";position:absolute;inset:-20% -10% auto;height:720px;background:radial-gradient(ellipse at 70% 30%,rgba(63,181,168,.16),transparent 60%),radial-gradient(ellipse at 20% 0,rgba(245,197,66,.10),transparent 55%);pointer-events:none}
+.hero .top{position:relative;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.08fr);gap:56px;align-items:center}
+.pill{display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--fg2);border:1px solid var(--line2);border-radius:999px;padding:5px 14px 5px 8px;margin-bottom:26px;background:rgba(17,19,24,.7)}
+.pill b{background:var(--acc2);color:#04201d;font-size:11.5px;padding:2px 8px;border-radius:999px;font-weight:700}
+h1{font-size:clamp(34px,3.7vw,54px);line-height:1.12;letter-spacing:-.025em;margin:0 0 22px;font-weight:800}
+h1 em{font-style:normal;background:linear-gradient(90deg,var(--acc),var(--acc2));-webkit-background-clip:text;background-clip:text;color:transparent}
+.lead{font-size:clamp(17px,1.45vw,19px);color:var(--fg2);max-width:32em;margin:0}
+.acts{display:flex;gap:12px;flex-wrap:wrap;margin-top:34px}
+.trust{margin-top:34px;font-size:13px;color:var(--mut);display:flex;gap:18px;flex-wrap:wrap}
+.trust span:before{content:"✓ ";color:var(--acc2)}
+/* 首屏右侧：真实界面 + 真实场 */
+.stage{position:relative;height:560px}
+.win{position:absolute;left:0;top:0;width:76%;border-radius:12px;overflow:hidden;border:1px solid var(--line2);background:var(--bg2);box-shadow:0 30px 80px rgba(0,0,0,.55)}
+.win .bar{height:32px;display:flex;align-items:center;gap:7px;padding:0 12px;border-bottom:1px solid var(--line);background:#0e1015}
+.win .bar i{width:10px;height:10px;border-radius:50%;background:#2c313c}
+.win .bar span{margin-left:10px;font:12px var(--mono);color:var(--mut)}
+.win .shot{height:470px;overflow:hidden}
+.win .shot img{width:100%}
+.field{position:absolute;right:0;top:56px;width:34%;border-radius:12px;overflow:hidden;background:#fff;padding:10px 8px 6px;box-shadow:0 30px 80px rgba(0,0,0,.6);border:1px solid rgba(255,255,255,.1)}
+.field small{display:block;color:#333;font:11.5px/1.4 var(--sans);padding:6px 4px 2px}
+.chip{position:absolute;left:8%;bottom:0;background:rgba(17,19,24,.94);border:1px solid var(--line2);border-radius:12px;padding:14px 18px;box-shadow:0 20px 50px rgba(0,0,0,.5);backdrop-filter:blur(8px)}
+.chip .k{font-size:12px;color:var(--mut)}
+.chip .v{font-size:28px;font-weight:800;letter-spacing:-.02em}
+.chip .v small{font-size:13px;font-weight:500;color:var(--acc2);margin-left:8px}
 
-/* 实测：期刊表格样式，三线表 */
-.ledger{margin-top:56px;width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
-.ledger caption{caption-side:top;text-align:left;font:400 13px/1.5 var(--mono);color:var(--mut);padding-bottom:14px}
-.ledger thead th{font:500 13px var(--mono);color:var(--mut);text-align:right;padding:12px 16px;border-top:2px solid var(--bone2);border-bottom:1px solid var(--bone2)}
-.ledger thead th:first-child{text-align:left}
-.ledger td{padding:16px;text-align:right;border-bottom:1px solid var(--rule);font:400 17px var(--mono)}
-.ledger td:first-child{text-align:left;font:400 16px var(--sans);color:var(--bone2)}
-.ledger tbody tr:last-child td{border-bottom:2px solid var(--bone2)}
-.ledger .big{font:400 clamp(26px,2.6vw,34px)/1 var(--serif);color:var(--bone)}
-.ledger .dv{color:var(--data)}
-.ledger .miss{color:var(--ember)}
-.ledger .note{font:400 12.5px var(--sans);color:var(--mut);display:block;margin-top:4px}
+/* 数字条 */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid var(--line);border-radius:16px;background:var(--bg2);margin:72px 0 0}
+.stats div{padding:26px 28px;border-left:1px solid var(--line)}
+.stats div:first-child{border-left:0}
+.stats b{display:block;font-size:clamp(28px,3vw,40px);font-weight:800;letter-spacing:-.03em;line-height:1.1}
+.stats b small{font-size:.5em;font-weight:600;color:var(--fg2)}
+.stats span{font-size:13.5px;color:var(--mut)}
 
-/* 机制：左侧标题粘住，右侧条目 */
-.mech{display:grid;grid-template-columns:minmax(0,.8fr) minmax(0,1.2fr);gap:64px;margin-top:8px}
-.mech .stick{position:sticky;top:100px;align-self:start}
-.mech dl{margin:0}
-.mech dt{font:700 21px/1.4 var(--cjk);padding-top:28px;border-top:1px solid var(--rule)}
-.mech dt:first-child{padding-top:0;border-top:0}
-.mech dd{margin:10px 0 30px;color:var(--bone2);max-width:34em}
+section{padding:110px 0}
+.eyebrow{font:600 13px var(--mono);color:var(--acc2);letter-spacing:.06em;text-transform:uppercase;margin:0 0 14px}
+h2{font-size:clamp(30px,3.4vw,46px);line-height:1.18;letter-spacing:-.02em;margin:0 0 18px;font-weight:800;max-width:20em}
+.intro{color:var(--fg2);max-width:38em;margin:0;font-size:17.5px}
 
-/* RSI 循环：真实的顺序，所以编号 */
-.loop{display:grid;grid-template-columns:repeat(5,1fr);margin:56px 0 0;padding:0;list-style:none;counter-reset:s;border-top:1px solid var(--bone2)}
-.loop li{counter-increment:s;padding:22px 20px 0 0;position:relative}
-.loop li:before{content:counter(s);font:400 44px/1 var(--serif);color:var(--ember);display:block;margin-bottom:12px}
-.loop b{display:block;font:700 18px/1.4 var(--cjk);margin-bottom:6px}
-.loop span{font-size:14.5px;color:var(--bone2)}
-.plate{margin:64px 0 0;max-width:940px;background:#fff;border-radius:4px;padding:18px}
-.plate img{display:block;width:100%;height:auto}
-.plate+figcaption,.fig figcaption{font:400 13px/1.6 var(--mono);color:var(--mut);margin-top:14px;max-width:60em}
+/* 痛点 → 方案 */
+.pain{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:52px}
+.card{background:var(--bg2);border:1px solid var(--line);border-radius:16px;padding:28px}
+.card .ic{width:40px;height:40px;border-radius:10px;display:grid;place-items:center;background:var(--bg3);border:1px solid var(--line2);margin-bottom:18px;font-size:19px}
+.card h3{margin:0 0 8px;font-size:19px;letter-spacing:-.01em}
+.card p{margin:0;color:var(--fg2);font-size:15.5px}
+.card .was{display:block;font-size:13px;color:var(--warn);margin-bottom:6px}
 
-/* 图版 */
-.figs{display:grid;grid-template-columns:repeat(12,1fr);gap:40px 28px;margin-top:56px;align-items:start}
-.fig .im.tall{aspect-ratio:4/3}.fig .im.tall img{height:100%;object-fit:cover;object-position:top}
-.fig{margin:0}
-.fig .im{background:var(--ink2);border:1px solid var(--rule);border-radius:4px;overflow:hidden}
-.fig .im.paper{background:#fff;padding:10px}
-.fig img{display:block;width:100%;height:auto}
-.f1{grid-column:span 7}.f2{grid-column:span 5}.f3{grid-column:span 5}.f4{grid-column:span 7}
-.figs{align-items:start}
-/* 竖长的界面截图裁成与旁边论文图同高，只露上半部分 */
-.fig .im.tall{position:relative}
-.fig .im.tall:after{content:"";position:absolute;left:0;right:0;bottom:0;height:56px;background:linear-gradient(transparent,var(--ink2));pointer-events:none}
-@media(max-width:900px){.fig .im.tall{aspect-ratio:auto}}
+/* 功能块：左右交替 */
+.feat{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr);gap:64px;align-items:center;margin-top:96px}
+.feat.r{grid-template-columns:minmax(0,1.1fr) minmax(0,.9fr)}
+.feat.r .txt{order:2}
+.feat h2{font-size:clamp(26px,2.5vw,34px)}
+.feat ul{list-style:none;padding:0;margin:24px 0 0}
+.feat li{padding:10px 0 10px 30px;position:relative;color:var(--fg2);border-top:1px solid var(--line)}
+.feat li:before{content:"";position:absolute;left:4px;top:19px;width:10px;height:10px;border-radius:3px;background:var(--acc2)}
+.feat li b{color:var(--fg)}
+.pic{border-radius:14px;overflow:hidden;border:1px solid var(--line2);background:var(--bg2);box-shadow:0 24px 70px rgba(0,0,0,.45)}
+.pic.white{background:#fff;padding:14px}
+.pic.crop{max-height:520px}
+.cap{font-size:13px;color:var(--mut);margin-top:12px}
 
-/* 边界 */
-.open{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0;margin-top:48px;border-top:1px solid var(--rule)}
-.open div{padding:26px 28px 26px 0;border-bottom:1px solid var(--rule)}
-.open div:nth-child(odd){border-right:1px solid var(--rule)}
-.open div:nth-child(even){padding-left:28px}
-.open b{display:block;font:700 18px/1.4 var(--cjk);margin-bottom:6px}
-.open p{margin:0;color:var(--bone2);font-size:15.5px}
-.open .st{font:500 12px var(--mono);color:var(--ember);display:block;margin-bottom:8px}
-.open .st.run{color:var(--data)}
+/* 对照表 */
+.tbl{margin-top:48px;border:1px solid var(--line);border-radius:16px;overflow:hidden;background:var(--bg2)}
+.tbl table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+.tbl th,.tbl td{padding:16px 22px;text-align:right;border-top:1px solid var(--line)}
+.tbl thead th{border-top:0;font-size:13px;color:var(--mut);font-weight:600;background:var(--bg3)}
+.tbl th:first-child,.tbl td:first-child{text-align:left}
+.tbl td:first-child{color:var(--fg2)}
+.tbl td.n{font-size:20px;font-weight:700}
+.tag{display:inline-block;font-size:12.5px;font-weight:600;padding:3px 10px;border-radius:999px}
+.tag.ok{background:rgba(63,181,168,.15);color:#6fd6ca}
+.tag.no{background:rgba(255,138,91,.14);color:var(--warn)}
+.tag.run{background:rgba(90,160,255,.14);color:#8fbcff}
+.note{display:block;font-size:12.5px;color:var(--mut)}
 
-.end{padding:120px 0 100px;text-align:left}
-.end h2{font-size:clamp(34px,4.4vw,58px);max-width:14em}
-footer{border-top:1px solid var(--rule);padding:32px 0 48px;font:400 13px/1.7 var(--mono);color:var(--mut)}
+/* 流程 */
+.loop{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin:48px 0 0;padding:0;list-style:none;counter-reset:s}
+.loop li{counter-increment:s;background:var(--bg2);border:1px solid var(--line);border-radius:14px;padding:20px}
+.loop li:before{content:"0" counter(s);font:700 13px var(--mono);color:var(--acc);display:block;margin-bottom:10px}
+.loop b{display:block;font-size:16.5px;margin-bottom:4px}
+.loop span{font-size:14px;color:var(--fg2)}
+
+/* 结尾 CTA */
+.cta{margin:0 0 110px;border-radius:24px;padding:64px;background:radial-gradient(ellipse at 85% 0,rgba(63,181,168,.25),transparent 60%),radial-gradient(ellipse at 0 100%,rgba(245,197,66,.14),transparent 55%),var(--bg2);border:1px solid var(--line2);display:grid;grid-template-columns:1.3fr 1fr;gap:40px;align-items:center}
+.cta h2{margin:0 0 12px}
+.cta .acts{margin-top:0;justify-content:flex-end}
+footer{border-top:1px solid var(--line);padding:30px 0 44px;font-size:13px;color:var(--mut)}
 footer .w{display:flex;justify-content:space-between;gap:24px;flex-wrap:wrap}
-footer a{color:var(--bone2);text-decoration:none}footer a:hover{color:var(--bone)}
+footer a{color:var(--fg2);text-decoration:none}
 
-@media(max-width:900px){
+@media(max-width:960px){
   .w{padding:0 22px}.nav a.l{display:none}
-  .hero{grid-template-columns:1fr;min-height:0;padding-top:40px;padding-bottom:80px;gap:40px}
-  .col{height:460px;min-height:0}
-  .mech{grid-template-columns:1fr;gap:28px}.mech .stick{position:static}
-  .loop{grid-template-columns:1fr 1fr;row-gap:26px}
-  .figs{grid-template-columns:1fr}.f1,.f2,.f3,.f4{grid-column:auto}
-  .open{grid-template-columns:1fr}.open div{border-right:0!important;padding-left:0!important}
-  .ledger td,.ledger thead th{padding:12px 8px}.ledger td{font-size:14px}
-  section{padding:80px 0}
+  .hero{padding-top:56px}.hero .top,.feat,.feat.r,.cta{grid-template-columns:1fr;gap:36px}
+  .feat.r .txt{order:0}
+  .stage{height:460px}.win .shot{height:380px}
+  .stats{grid-template-columns:1fr 1fr}.stats div:nth-child(3){border-left:0}.stats div:nth-child(n+3){border-top:1px solid var(--line)}
+  .pain{grid-template-columns:1fr}.loop{grid-template-columns:1fr 1fr}
+  .tbl{overflow-x:auto}.tbl th,.tbl td{padding:12px 14px}
+  .cta{padding:36px}.cta .acts{justify-content:flex-start}
+  section{padding:76px 0}
 }
-@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
 </style>
 </head>
 <body>
-<a href="#main" class="skip" style="position:absolute;left:-9999px">跳到正文</a>
+<a href="#main" class="skip">跳到正文</a>
 <header class="nav"><div class="w">
-  <a class="mark" href="#top">CFDriver<span>4MTO</span></a>
+  <a class="mark" href="#top"><i aria-hidden="true"></i>CFDriver<span>4MTO</span></a>
   <span class="sp"></span>
-  <a class="l" href="#numbers">实测</a><a class="l" href="#how">机制</a><a class="l" href="#rsi">分布器反演</a><a class="l" href="#plates">图版</a><a class="l" href="#open">未完成</a>
-  <a class="b" href="../">NullFlux 主页</a>
+  <a class="l" href="#why">为什么</a><a class="l" href="#features">能力</a><a class="l" href="#results">实测</a><a class="l" href="#rsi">分布器反演</a>
+  <a class="btn s g" href="#contact">申请试用</a>
 </div></header>
 
 <main id="main">
-<div class="w hero" id="top">
+<div class="hero" id="top"><div class="w top">
   <div>
-    <p class="cite"><b>Lu et al., 2016</b> · 中试 DMTO 流化床 · 三维欧拉双流体 · 8 组分集总反应</p>
-    <h1>你睡觉的时候，<br><span style="white-space:nowrap">它在替你把论文算完。</span></h1>
-    <p class="lead">CFDriver4MTO 是专门跑 CFD 的智能体。它读论文、建几何、划网格、提交求解，然后守着几天几夜的作业：服务重启、模型断线、浏览器关掉，求解都不中断。每个结论登记前都要过物理验收，每个文件都留哈希。</p>
+    <span class="pill"><b>案例</b>Lu et al. 2016 · 中试 DMTO 流化床三维复现</span>
+    <h1>把几天几夜的 CFD，<br><em>交给一个不会掉线的智能体。</em></h1>
+    <p class="lead">CFDriver4MTO 从论文出发，自己建几何、划网格、提交求解，再守着作业一直跑到出结果。服务重启、模型断线、浏览器关掉，求解都不会停。</p>
     <div class="acts">
-      <a class="btn p" href="#numbers">看实测数字</a>
-      <a class="btn g" href="#open">先看没做到的</a>
+      <a class="btn p" href="#contact">申请试用 →</a>
+      <a class="btn g" href="#results">看实测结果</a>
     </div>
+    <div class="trust"><span>基于开源 NullFlux</span><span>OpenFOAM v2306</span><span>结论全部可复核</span></div>
   </div>
-  <figure class="col" style="margin:0">
-    <canvas id="bed" aria-label="示意动画：鼓泡流化床中气泡上升，颜色随高度表示反应进程" role="img"></canvas>
-    <figcaption>示意动画，不是模拟结果：气泡穿过颗粒床层上升，颜色由冷到暖表示甲醇转化为烯烃</figcaption>
-  </figure>
+  <div class="stage" aria-label="产品界面与仿真结果">
+    <div class="win">
+      <div class="bar"><i></i><i></i><i></i><span>实时监视 · 两个长时作业</span></div>
+      <div class="shot"><img src="img/monitor.jpg?v=2" alt="实时监视页：两个求解作业的模拟时间、速率、预计剩余、Courant 数和日志尾部" width="939" height="1332"></div>
+    </div>
+    <figure class="field" style="margin:0">
+      <img src="img/hero_alpha.png" alt="智能体后处理出的时均固含率 y=0 剖面" width="560" height="1509">
+      <small>时均固含率，y = 0 剖面（本次复现实算）</small>
+    </figure>
+    <div class="chip"><div class="k">乙烯 + 丙烯选择性</div><div class="v">80.71 %<small>原文 80.69 %</small></div></div>
+  </div>
+</div>
+<div class="w"><div class="stats">
+  <div><b>0.4<small> %</small></b><span>出口 KPI 与原文最大偏差</span></div>
+  <div><b>1.98<small> M</small></b><span>细网格单元，三维双流体 + 8 组分</span></div>
+  <div><b>88<small> 核</small></b><span>两个作业同时无人值守</span></div>
+  <div><b>146<small> / 146</small></b><span>基础回归测试通过</span></div>
+</div></div>
 </div>
 
-<section id="numbers"><div class="w">
-  <h2>和原文逐项对，数字全部实测。</h2>
-  <p class="intro">对得上的和对不上的放在同一张表里。没跑出来的结果不进这张表。</p>
-  <table class="ledger">
-    <caption>表 1　出口与床内指标，本工作 vs 原文 CFD（时均窗口内）</caption>
-    <thead><tr><th>指标</th><th>本工作</th><th>原文</th><th>差异</th></tr></thead>
-    <tbody>
-      <tr><td>乙烯 + 丙烯选择性 S<sub>C2+C3</sub></td><td class="big">80.71 %</td><td>80.69 %</td><td class="dv">+0.02 pt</td></tr>
-      <tr><td>C₂H₄ / C₃H₆ 比</td><td class="big">1.205</td><td>1.210</td><td class="dv">−0.38 %</td></tr>
-      <tr><td>Z = 0.4 m 径向分布</td><td>平坦</td><td>平坦</td><td class="dv">一致</td></tr>
-      <tr><td>Z = 0.06 m 截面 min / 壁面值<span class="note">原文 Fig. 12b 的中心凹陷</span></td><td class="big">0.962</td><td>0.487</td><td class="miss">未复现</td></tr>
-      <tr><td>反应基本完成的高度<span class="note">原文 Fig. 12a</span></td><td>0.11 m</td><td>≈ 0.2 m</td><td class="miss">偏早</td></tr>
-    </tbody>
-  </table>
-  <table class="ledger" style="margin-top:40px">
-    <caption>表 2　工程侧</caption>
-    <thead><tr><th>项目</th><th>数值</th><th>说明</th></tr></thead>
-    <tbody>
-      <tr><td>几何体积误差</td><td class="big">−0.042 %</td><td class="dv">对原文尺寸</td></tr>
-      <tr><td>主筒壁面贴体误差 p95</td><td class="big">0.039 mm</td><td class="dv">网格 3.5 mm</td></tr>
-      <tr><td>细网格</td><td class="big">1.98 M</td><td class="dv">单元，64 核</td></tr>
-      <tr><td>无人值守并行</td><td class="big">88 核</td><td class="dv">两个长时作业</td></tr>
-      <tr><td>基础回归测试</td><td class="big">146 / 146</td><td class="dv">全部通过</td></tr>
-    </tbody>
-  </table>
-  <p class="src">来源：私有仓库中的 compare_paper.py、kpi_blocks.py、npm run test:foundation；机器 AMD EPYC 7643 ×96 核，OpenFOAM v2306。</p>
-</div></section>
-<section id="how"><div class="w mech">
-  <div class="stick">
-    <h2>不是更会说，<br>是更难跑崩。</h2>
-    <p class="intro">通用编程智能体把求解器当成一条 shell 命令。CFDriver 把它当成要跑好几天、随时会被打断的作业来管。</p>
+<section id="why"><div class="w">
+  <p class="eyebrow">为什么需要它</p>
+  <h2>通用编程智能体会写脚本，<br>但守不住一个要跑三天的算例。</h2>
+  <p class="intro">反应流化床一个工况动辄几十小时。真正耗人的不是写配置，而是盯作业、处理中断、判断结果能不能信。</p>
+  <div class="pain">
+    <div class="card"><div class="ic">⏱</div><span class="was">以前：会话一断，作业跟着丢</span><h3>求解和对话分开</h3><p>作业脱离智能体进程运行，登记在原子写入的索引里。服务重启后自动接管仍在跑的 MPI 作业。</p></div>
+    <div class="card"><div class="ic">↻</div><span class="was">以前：模型 503，任务停在半路</span><h3>断线后接着干</h3><p>有界退避重试，之后每 5 分钟保活，通路恢复就从中断那一步继续。真实的 503 → 重启 → 自动恢复已完整跑通。</p></div>
+    <div class="card"><div class="ic">✓</div><span class="was">以前：“跑完了”不等于“算对了”</span><h3>结论要有证据链</h3><p>生成、网格、求解、测量四阶段全部记哈希，指标由独立进程重算复核，通过物理验收才登记。</p></div>
   </div>
-  <dl>
-    <dt>求解和对话分开</dt>
-    <dd>求解作业脱离智能体进程独立运行，登记在原子写入的索引里。服务重启后自动接管还在跑的 MPI 作业，手动启动的作业也会被发现并纳入监视。</dd>
-    <dt>模型断线后接着干</dt>
-    <dd>请求失败按有界退避重试，连续失败后转为每 5 分钟保活一次，通路恢复就从中断的那一步继续。真实的 503 → 重启 → 自动恢复，已经完整跑通过一次。</dd>
-    <dt>结论要有证据链</dt>
-    <dd>生成、网格、求解、测量四个阶段，每一步的输入输出都记哈希。测量阶段只能写 <code>metrics.json</code>，登记前由独立进程重算复核。</dd>
-    <dt>论文给定的参数不能动</dt>
-    <dd>开孔率、进料、物性这类原文明确给出的值被锁定，搜索过程改不了。用来检验的观测量单独封存，只在最终检验时打开，防止对着答案调参。</dd>
-    <dt>出版质量的后处理</dt>
-    <dd>平面精确切割多面体单元，贴体网格的壁面就是真实边界线，不是方块台阶。衬线字体、LaTeX 符号、300 dpi，图可以直接放进论文。</dd>
-    <dt>过程看得见</dt>
-    <dd>实时监视页显示每个作业的模拟时间、速率、预计剩余、Courant 数和日志尾部；工作台里能直接打开算例总览、切片和三维几何。</dd>
-  </dl>
+</div></section>
+<section id="features" style="padding-top:0"><div class="w">
+  <div class="feat">
+    <div class="txt">
+      <p class="eyebrow">01 · 过程看得见</p>
+      <h2>每个作业跑到哪、还要多久，一眼就知道。</h2>
+      <p class="intro">实时监视页每 15 秒刷新一次：模拟时间、速率、预计剩余、Courant 数，再加上日志尾部。</p>
+      <ul>
+        <li><b>手动起的作业也会被发现</b>，自动纳入监视</li>
+        <li><b>核数预算</b>：提交前检查空闲核，不会超配</li>
+        <li><b>危险命令仍然等人确认</b>，自动续推不越过审批</li>
+      </ul>
+    </div>
+    <div><div class="pic crop"><img src="img/monitor.jpg?v=2" alt="实时监视页截图" loading="lazy" width="939" height="1332"></div></div>
+  </div>
+
+  <div class="feat r">
+    <div class="txt">
+      <p class="eyebrow">02 · 能直接放进论文的图</p>
+      <h2>后处理出来就是出版质量。</h2>
+      <p class="intro">平面精确切割多面体单元，贴体网格的壁面就是真实边界，不是方块台阶。衬线字体、LaTeX 符号、300 dpi。</p>
+      <ul>
+        <li><b>时均场</b>：在统计窗内逐时刻平均</li>
+        <li><b>任意截面</b>：x / y / z 切片，色图与范围可调</li>
+        <li><b>与原文同口径</b>：采样线、截面高度对齐论文图号</li>
+      </ul>
+    </div>
+    <div><div class="pic white"><img src="img/fig_fields.png" alt="时均场四联图：固含率、乙烯质量分数与 Z=0.06 m 截面" loading="lazy" width="2156" height="1584"></div>
+    <p class="cap">本次复现的时均场：(a) 固含率 (b) C₂H₄ (c, d) Z = 0.06 m 截面。智能体生成，未重画。</p></div>
+  </div>
+
+  <div class="feat">
+    <div class="txt">
+      <p class="eyebrow">03 · 从论文尺寸到网格</p>
+      <h2>几何按原文尺寸建，误差 −0.042 %。</h2>
+      <p class="intro">主筒壁面贴体误差 p95 只有 0.039 mm（网格尺度 3.5 mm）。工作台里能直接打开三维几何，按边界区着色、剖切检查。</p>
+      <ul>
+        <li><b>论文给定的参数被锁定</b>：开孔率、进料、物性搜索时改不了</li>
+        <li><b>检验用观测量单独封存</b>，防止对着答案调参</li>
+      </ul>
+    </div>
+    <div><div class="pic crop"><img src="img/geometry.jpg" alt="三维几何预览，按边界区着色，y=0 剖切" loading="lazy" width="939" height="1332" style="object-fit:cover;object-position:50% 70%;height:520px;width:100%"></div></div>
+  </div>
+</div></section>
+<section id="results" style="background:linear-gradient(180deg,transparent,rgba(17,19,24,.6) 30%,transparent)"><div class="w">
+  <p class="eyebrow">实测结果</p>
+  <h2>出口指标对上了。没对上的，也写在表里。</h2>
+  <p class="intro">中试 DMTO 流化床，三维欧拉双流体，8 组分集总反应。下面的数字都来自时均窗口内的实算。</p>
+  <div class="tbl"><table>
+    <thead><tr><th>指标</th><th>CFDriver4MTO</th><th>原文 CFD</th><th>结论</th></tr></thead>
+    <tbody>
+      <tr><td>乙烯 + 丙烯选择性 S<sub>C2+C3</sub></td><td class="n">80.71 %</td><td>80.69 %</td><td><span class="tag ok">+0.02 pt</span></td></tr>
+      <tr><td>C₂H₄ / C₃H₆ 比</td><td class="n">1.205</td><td>1.210</td><td><span class="tag ok">−0.38 %</span></td></tr>
+      <tr><td>Z = 0.4 m 径向分布</td><td class="n">平坦</td><td>平坦</td><td><span class="tag ok">一致</span></td></tr>
+      <tr><td>Z = 0.06 m 截面 min / 壁面值<span class="note">原文 Fig. 12b 的中心凹陷</span></td><td class="n">0.962</td><td>0.487</td><td><span class="tag no">未复现</span></td></tr>
+      <tr><td>反应基本完成的高度<span class="note">原文 Fig. 12a</span></td><td class="n">0.11 m</td><td>≈ 0.2 m</td><td><span class="tag no">偏早</span></td></tr>
+      <tr><td>和通用编程智能体的同模型对比</td><td class="n">—</td><td>—</td><td><span class="tag run">进行中，录屏</span></td></tr>
+    </tbody>
+  </table></div>
+  <p class="cap">细网格（1.98 M 单元）复算和分布器反演正在跑，用来攻 Fig. 12b。结果出来前不写“完整复现”。</p>
 </div></section>
 
-<section id="rsi"><div class="w">
-  <h2>原文只给了开孔率，<br>布孔让 CFD 自己反推。</h2>
-  <p class="intro">论文写了分布器开孔率 5 %，没写孔数、孔径和位置。反演循环由大模型提出候选布孔，CFD 打分，代理模型用真实结果持续校准。</p>
+<section id="rsi" style="padding-top:40px"><div class="w">
+  <p class="eyebrow">04 · 分布器反演</p>
+  <h2>论文只给了开孔率 5 %，<br>布孔让 CFD 自己反推。</h2>
+  <p class="intro">孔数、孔径、位置原文都没写。大模型提出候选布孔，CFD 打分，代理模型用真实结果持续校准，全程无人值守。</p>
   <ol class="loop">
-    <li><b>提议</b><span>模型读历史档案，写一个只能 import math 的 layout 函数</span></li>
-    <li><b>筛查</b><span>沙箱执行，检查 5 % 开孔率、制造约束，代理模型排序</span></li>
-    <li><b>CFD</b><span>走完四阶段证据链，24 核，约 11 小时一个</span></li>
-    <li><b>接受</b><span>改进必须超过两倍的时均窗口噪声</span></li>
-    <li><b>校准</b><span>每 3 个真实结果校准一次代理模型，评估器本身不动</span></li>
+    <li><b>提议</b><span>读历史档案，写一个只能 import math 的布孔函数</span></li>
+    <li><b>筛查</b><span>沙箱执行，查开孔率与制造约束，代理模型排序</span></li>
+    <li><b>CFD</b><span>四阶段证据链，24 核，约 11 小时一个</span></li>
+    <li><b>接受</b><span>改进必须超过两倍时均窗口噪声</span></li>
+    <li><b>校准</b><span>每 3 个真实结果校准代理，评估器本身不动</span></li>
   </ol>
-  <figure style="margin:0">
-    <div class="plate"><img src="img/rsi_report.png" alt="反演报告：三个高度的乙烯径向分布与原文对比、211 孔基准布孔、Z=0.06 m 截面乙烯分布" loading="lazy" width="1940" height="1220"></div>
-    <figcaption>图 1　211 孔基准在新流水线上的复核。(a)–(c) 三个高度的乙烯径向分布，虚线为原文；(d) 基准布孔；(e) Z = 0.06 m 截面。基准必须先跑回 min/壁 0.962（容差 0.05），否则搜索自动停止。得到的是与原文 CFD 等效的布孔，属于标定量，不代表真实设备。</figcaption>
-  </figure>
-</div></section>
-<section id="plates"><div class="w">
-  <h2>它交出来的东西。</h2>
-  <p class="intro">下面都是智能体在这次复现里实际生成的图和界面截图，没有重画。</p>
-  <div class="figs">
-    <figure class="fig f1"><div class="im paper"><img src="img/fig_fields.png" alt="时均场四联图：固含率、乙烯质量分数与 Z=0.06 m 截面" loading="lazy" width="2156" height="1584"></div><figcaption>图 2　时均场：固含率、C₂H₄ 与 Z = 0.06 m 截面，精确多面体切片</figcaption></figure>
-    <figure class="fig f2"><div class="im tall"><img src="img/monitor.jpg" alt="实时监视页：两个求解作业的模拟时间、速率、预计剩余与日志尾部" loading="lazy" width="939" height="1332"></div><figcaption>图 3　实时监视：两个长时作业，88 / 96 核</figcaption></figure>
-    <figure class="fig f3"><div class="im tall"><img style="object-position:50% 70%" src="img/geometry.jpg" alt="三维几何预览，按边界区着色，y=0 剖切" loading="lazy" width="939" height="1332"></div><figcaption>图 4　几何预览，按边界区着色，y = 0 剖切</figcaption></figure>
-    <figure class="fig f4"><div class="im paper"><img src="img/compare_paper.png" alt="与原文的定量比对图" loading="lazy" width="1849" height="1255"></div><figcaption>图 5　与原文逐项定量比对</figcaption></figure>
-  </div>
+  <div class="pic white" style="margin-top:40px"><img src="img/rsi_report.png" alt="反演报告：三个高度的乙烯径向分布与原文对比、211 孔基准布孔、Z=0.06 m 截面乙烯分布" loading="lazy" width="1940" height="1220"></div>
+  <p class="cap">211 孔基准在流水线上的复核报告。基准必须先跑回参考值（容差 0.05），否则搜索自动停止。</p>
 </div></section>
 
-<section id="open"><div class="w">
-  <h2>还没做到的，也写在这里。</h2>
-  <p class="intro">这些问题没解决之前，页面上不会出现“完整复现”或“超过某某”。</p>
-  <div class="open">
-    <div><span class="st">未复现</span><b>Fig. 12b 截面凹陷</b><p>Z = 0.06 m 的 min/壁为 0.962，原文 0.487。细网格复算和分布器反演正在进行。</p></div>
-    <div><span class="st">偏早</span><b>Fig. 12a 反应完成高度</b><p>本工作 0.11 m，原文约 0.2 m，可能与底部布气和网格分辨率有关。</p></div>
-    <div><span class="st run">进行中</span><b>和通用编程智能体的对比</b><p>同模型 A/B 实验已设计好，全过程录屏；结果出来之前不下结论。</p></div>
-    <div><span class="st run">设计如此</span><b>不会越过人工审批</b><p>断线恢复只在自动模式下续推，危险命令仍然停下来等人确认。</p></div>
+<div class="w" id="contact"><div class="cta">
+  <div>
+    <h2>想在你的算例上试试？</h2>
+    <p class="intro" style="font-size:16px">CFDriver4MTO 基于开源的 NullFlux 构建，目前小范围试用。在 NullFlux 仓库开一个 issue，说说你的算例。</p>
   </div>
-</div></section>
-
-<section class="end"><div class="w">
-  <h2>想在你的算例上试试？</h2>
-  <p class="intro">CFDriver4MTO 目前不公开源代码，基于开源的 NullFlux 构建。合作和试用请在 NullFlux 仓库开 issue 联系作者。</p>
   <div class="acts">
-    <a class="btn p" href="https://github.com/LZF1111/nullflux/issues/new?title=CFDriver4MTO%20%E8%AF%95%E7%94%A8">联系作者</a>
+    <a class="btn p" href="https://github.com/LZF1111/nullflux/issues/new?title=CFDriver4MTO%20%E8%AF%95%E7%94%A8">申请试用 →</a>
     <a class="btn g" href="../">了解 NullFlux</a>
   </div>
-</div></section>
+</div></div>
 </main>
 
 <footer><div class="w">
   <span>CFDriver4MTO · 数字取自 96 核 EPYC 工作站实测 · 2026-11</span>
   <span><a href="../">NullFlux</a> · <a href="https://github.com/LZF1111/nullflux">GitHub</a></span>
 </div></footer>
-<script>
-// 首屏示意：流化床剖面。颗粒受上升气泡推开，颜色随高度从冷（甲醇）过渡到暖（烯烃）
-(() => {
-  const cv = document.getElementById('bed'); if (!cv) return;
-  const ctx = cv.getContext('2d'), still = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  let W, H, dpr, geo, parts = [], bubbles = [], t = 0;
-  const cold = [127, 180, 201], warm = [232, 116, 59];
-  const mix = k => cold.map((c, i) => Math.round(c + (warm[i] - c) * k));
-  function size() {
-    dpr = Math.min(devicePixelRatio || 1, 2);
-    const r = cv.getBoundingClientRect(); W = r.width; H = r.height;
-    cv.width = W * dpr; cv.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    // 下部密相区窄，上部稀相扩大段宽
-    const cx = W / 2, bw = Math.min(W * 0.34, 150), fw = Math.min(W * 0.62, 260);
-    geo = { cx, bw, fw, top: 18, neck: H * 0.36, bedTop: H * 0.48, bot: H - 46 };
-    parts = Array.from({ length: Math.round(bw * 4.2) }, () => ({ x: cx + (Math.random() - .5) * bw * .92, y: geo.bedTop + Math.random() * (geo.bot - geo.bedTop), vx: 0, vy: 0 }));
-    bubbles = [];
-  }
-  const halfW = y => y > geo.neck + 40 ? geo.bw / 2 : y < geo.neck ? geo.fw / 2 : geo.bw / 2 + (geo.fw - geo.bw) / 2 * (1 - (y - geo.neck) / 40);
-  function outline() {
-    const { cx, top, neck, bot } = geo;
-    ctx.strokeStyle = 'rgba(236,230,216,.55)'; ctx.lineWidth = 1.2; ctx.beginPath();
-    for (const s of [-1, 1]) { ctx.moveTo(cx + s * geo.fw / 2, top); ctx.lineTo(cx + s * geo.fw / 2, neck); ctx.lineTo(cx + s * geo.bw / 2, neck + 40); ctx.lineTo(cx + s * geo.bw / 2, bot); }
-    ctx.stroke();
-    // 分布板
-    ctx.setLineDash([3, 5]); ctx.beginPath(); ctx.moveTo(cx - geo.bw / 2, bot); ctx.lineTo(cx + geo.bw / 2, bot); ctx.stroke(); ctx.setLineDash([]);
-    ctx.fillStyle = 'rgba(139,134,120,.9)'; ctx.font = '11px "JetBrains Mono", monospace'; ctx.textAlign = 'left';
-    const lx = cx + geo.fw / 2 + 12; if (lx > W - 70) return;
-    [[top + 8, '出口'], [neck + 20, '扩大段'], [geo.bedTop, '床层表面'], [bot, '分布板 · 5 % 开孔']].forEach(([y, s]) => { ctx.fillText(s, Math.min(lx, W - 96), y + 4); });
-  }
-  function step() {
-    t++;
-    if (!still && t % 9 === 0) bubbles.push({ x: geo.cx + (Math.random() - .5) * geo.bw * .7, y: geo.bot - 4, r: 3, k: 0 });
-    for (const b of bubbles) { b.y -= 1.05 + b.r * .06; b.r = Math.min(22, b.r + .045); b.x += Math.sin((t + b.y) * .02) * .25; }
-    bubbles = bubbles.filter(b => b.y > geo.bedTop - 10);
-    for (const p of parts) {
-      for (const b of bubbles) { const dx = p.x - b.x, dy = p.y - b.y, d2 = dx * dx + dy * dy, R = b.r * 2.1; if (d2 < R * R) { const d = Math.sqrt(d2) || 1, f = (R - d) / R * .9; p.vx += dx / d * f; p.vy += dy / d * f - .25 * f; } }
-      p.vy += .05; p.vx *= .86; p.vy *= .86; p.x += p.vx; p.y += p.vy;
-      const hw = halfW(p.y) - 2;
-      if (p.x < geo.cx - hw) { p.x = geo.cx - hw; p.vx *= -.4; } if (p.x > geo.cx + hw) { p.x = geo.cx + hw; p.vx *= -.4; }
-      if (p.y > geo.bot - 2) { p.y = geo.bot - 2; p.vy *= -.3; } if (p.y < geo.neck + 60) { p.y = geo.neck + 60; p.vy = Math.abs(p.vy); }
-    }
-  }
-  function draw() {
-    ctx.clearRect(0, 0, W, H);
-    // 气相浓度：从分布板往上由冷变暖的淡光
-    const g = ctx.createLinearGradient(0, geo.bot, 0, geo.top);
-    g.addColorStop(0, 'rgba(127,180,201,.10)'); g.addColorStop(.55, 'rgba(232,116,59,.08)'); g.addColorStop(1, 'rgba(232,116,59,.02)');
-    ctx.fillStyle = g; ctx.beginPath();
-    ctx.moveTo(geo.cx - geo.fw / 2, geo.top); ctx.lineTo(geo.cx + geo.fw / 2, geo.top); ctx.lineTo(geo.cx + geo.fw / 2, geo.neck); ctx.lineTo(geo.cx + geo.bw / 2, geo.neck + 40);
-    ctx.lineTo(geo.cx + geo.bw / 2, geo.bot); ctx.lineTo(geo.cx - geo.bw / 2, geo.bot); ctx.lineTo(geo.cx - geo.bw / 2, geo.neck + 40); ctx.lineTo(geo.cx - geo.fw / 2, geo.neck); ctx.closePath(); ctx.fill();
-    for (const p of parts) { const k = Math.max(0, Math.min(1, (geo.bot - p.y) / (geo.bot - geo.bedTop + 40))); const c = mix(k); ctx.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},.85)`; ctx.fillRect(p.x - 1.1, p.y - 1.1, 2.2, 2.2); }
-    ctx.strokeStyle = 'rgba(236,230,216,.28)'; ctx.lineWidth = 1;
-    for (const b of bubbles) { ctx.beginPath(); ctx.ellipse(b.x, b.y, b.r * 1.15, b.r * .9, 0, 0, Math.PI * 2); ctx.stroke(); }
-    outline();
-  }
-  let on = true;
-  const loop = () => { if (on) { step(); draw(); } requestAnimationFrame(loop); };
-  new IntersectionObserver(e => { on = e[0].isIntersecting; }).observe(cv);
-  addEventListener('resize', size); size();
-  if (still) { for (let i = 0; i < 260; i++) { if (i % 9 === 0) bubbles.push({ x: geo.cx + (Math.random() - .5) * geo.bw * .7, y: geo.bot - 4, r: 3 }); t = i; step(); } draw(); }
-  else loop();
-})();
-</script>
 </body>
 </html>
