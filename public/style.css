@@ -1,4 +1,4 @@
-/* CFDriver workspace tokens */
+/* NullFlux workspace tokens */
 :root {
   --bg0: #ededed;
   --bg1: #ffffff;
@@ -660,7 +660,7 @@ header { z-index: 300; position: sticky; top: 0; backdrop-filter: blur(6px); }
 }
 
 /* ==========================================================================
-   CFDriver — Codex 式工作台设计系统（黑白 · 玻璃 · 大字号）
+   NullFlux — Codex 式工作台设计系统（黑白 · 玻璃 · 大字号）
    侧栏(任务) | 线程(对话+活动行+输入) | 检查器(运行/结果/场/文件/终端)
    ========================================================================== */
 :root {

@@ -1,4 +1,4 @@
-// CFDriver frontend — 浮动面板 + 三维可视化 + 跨平台交互终端
+// NullFlux frontend — 浮动面板 + 三维可视化 + 跨平台交互终端
 const $ = (id) => document.getElementById(id);
 
 // ====================== 本地存储 ======================
@@ -22,7 +22,7 @@ for (const panel of document.querySelectorAll('.panel[data-pid="skills"], .panel
 }
 
 // ====================== 检查器：对话 / 运行 / 结果 / 文件，运行与结果下分子视图 ======================
-const PANELS_KEY = 'cfdriver4mto.inspector.v3';
+const PANELS_KEY = 'nullflux.inspector.v3';
 // pid → { label, ctx }：ctx 是所属标签；没有 ctx 的是浮层（技能库）
 const PANEL_META = {
   chat:            { label: '对话' },
@@ -816,7 +816,7 @@ function connect() {
     connect._retry = 0;
     _setConnStatus('ok');
     try { $('auto-mode').disabled = true; } catch {}
-    if (wasRetry) addSystem('[已重连 CFDriver]'); else addTerm('[已连接 CFDriver]', 'sys');
+    if (wasRetry) addSystem('[已重连 NullFlux]'); else addTerm('[已连接 NullFlux]', 'sys');
   };
   ws.onerror = () => { _setConnStatus('reconnecting'); };
 }
@@ -825,7 +825,7 @@ connect();
 fetch('/api/config').then(r => r.json()).then(c => {
   $('ws-display').textContent = c.workspace;
   // 顶部不再重复显示模型名（按钮里已有）
-  document.title = 'CFDriver';
+  document.title = 'NullFlux';
   platform = c.platform;
   $('shell-name').textContent = '· ' + (platform === 'win32' ? 'cmd.exe' : 'bash');
   $('term-prompt').textContent = platform === 'win32' ? '>' : '$';
@@ -1491,7 +1491,7 @@ function addUser(text, atts) {
 }
 function addAssistantBubble() {
   const div = document.createElement('div'); div.className = 'msg assistant';
-  div.innerHTML = `<div class="role">CFDriver</div><div class="bubble"></div>`;
+  div.innerHTML = `<div class="role">NullFlux</div><div class="bubble"></div>`;
   $('chat').appendChild(div); scrollChat();
   return div.querySelector('.bubble');
 }
@@ -2482,7 +2482,7 @@ async function loadCopilotModels() {
   } catch (e) { list.innerHTML = `<div class="small" style="color:#fca5a5;padding:10px;">${e.message}</div>`; }
 }
 // ─── v0.9.5 模型选择器（OpenChamber 风格） ─────────────────────────────────
-const MP_FAV_KEY = 'cfdriver4mto.mp_favs';
+const MP_FAV_KEY = 'nullflux.mp_favs';
 const MP_KNOWN = [
   // id, provider-group, label, ctx (k), baseUrlHint
   { id: 'claude-opus-5-5',       grp: 'Anthropic',     label: 'Claude Opus 5.5',       ctx: 200 },
@@ -2724,7 +2724,7 @@ refreshModelStatus();
 
 
 // ====================== Codex 式外壳：侧栏任务 / 线程头 / 检查器 / 产物 ======================
-const SHELL_KEY = 'cfdriver4mto.shell.v1';
+const SHELL_KEY = 'nullflux.shell.v1';
 const shellState = Object.assign({ sidebar: true, inspector: true, inspectorW: 460, sidebarW: 272, max: false }, readUIStorage(SHELL_KEY, {}));
 let mobileSidebarOpen = false;
 const narrowMQ = matchMedia('(max-width: 900px)');
@@ -3026,7 +3026,7 @@ function updateThreadHead() {
   if (title.getAttribute('contenteditable') !== 'true') title.textContent = cur?.title || '新任务';
   const [state, label] = taskStatus(cur, true);
   const pill = $('thread-status'); pill.dataset.state = state; pill.textContent = label;
-  document.title = (state === 'running' ? '● ' : '') + (cur?.title ? `${cur.title} · CFDriver` : 'CFDriver');
+  document.title = (state === 'running' ? '● ' : '') + (cur?.title ? `${cur.title} · NullFlux` : 'NullFlux');
 }
 $('task-search').addEventListener('input', renderTaskList);
 $('task-search').addEventListener('keydown', e => {
@@ -3143,7 +3143,7 @@ updateProjectLabel();
 
 // 快捷键：Ctrl+B 侧栏 · Ctrl+I 检查器 · Ctrl+K 搜索任务 · Esc 停止（输入框内、运行中）
 // v0.9.4: 快捷键注册表 — 集中管理，支持自定义绑定
-const KEYBINDS_KEY = 'cfdriver4mto.keybinds';
+const KEYBINDS_KEY = 'nullflux.keybinds';
 const DEFAULT_KEYBINDS = {
   'sidebar.toggle':    { keys: 'Ctrl+B',       label: '切换侧栏',     desc: '显示/隐藏左侧任务栏' },
   'inspector.toggle':  { keys: 'Ctrl+I',       label: '切换检查器',   desc: '显示/隐藏右侧检查器面板' },
@@ -3208,7 +3208,7 @@ applyShell();
 renderTaskList();
 
 // ===== 自动设计面板：Optuna study 只读视图（试验表 / 收敛曲线 / 最优参数）=====
-const DESIGN = { study: localStorage.getItem('cfdriver4mto.design.study') || '', timer: null };
+const DESIGN = { study: localStorage.getItem('nullflux.design.study') || '', timer: null };
 async function designLoadStudies() {
   try {
     const r = await fetch('/api/opt/studies').then(x => x.json());
@@ -3265,7 +3265,7 @@ async function designRender() {
       <tbody>${rows || `<tr><td colspan="${names.length + 3}" class="muted small">尚无试验</td></tr>`}</tbody></table></div>
     <div class="muted small design-note">只有经独立验收（网格 OK、求解 End、统计窗指标、哈希复验）的试验才计为"通过"并参与最优。</div>`;
 }
-$('design-study').onchange = e => { DESIGN.study = e.target.value; localStorage.setItem('cfdriver4mto.design.study', DESIGN.study); designRender(); };
+$('design-study').onchange = e => { DESIGN.study = e.target.value; localStorage.setItem('nullflux.design.study', DESIGN.study); designRender(); };
 $('design-refresh').onclick = () => designLoadStudies();
 SUBVIEW_HOOKS.design = () => designLoadStudies();
 setInterval(() => { if (isPanelVisible('design') && !document.hidden && DESIGN.study) designRender(); }, 15000);
@@ -3331,7 +3331,7 @@ $('goal-dlg').addEventListener('close', () => {
 
 
 // ====================== 运行 › 作业：实时作业卡 + 算例总览；结果 › 切片 / 几何；求解告警 ======================
-const LIVE = { timer: 0, last: 0, busy: false, cases: null, ovCase: readUIStorage('cfdriver4mto.ovcase', '') };
+const LIVE = { timer: 0, last: 0, busy: false, cases: null, ovCase: readUIStorage('nullflux.ovcase', '') };
 const fx = (v, d = 3) => v === null || v === undefined || !Number.isFinite(Number(v)) ? '–' : Number(v).toFixed(d);
 const fhours = h => h === null || h === undefined ? '–' : h < 1 ? Math.round(h * 60) + ' min' : h < 48 ? h.toFixed(1) + ' h' : (h / 24).toFixed(1) + ' 天';
 const shortCase = p => String(p || '').split(/[\\/]/).filter(Boolean).slice(-2).join('/');
@@ -3492,7 +3492,7 @@ async function loadOverviewCases() {
 }
 $('ov-case').onchange = () => setOverviewCase($('ov-case').value);
 function setOverviewCase(c) {
-  LIVE.ovCase = c || ''; writeUIStorage('cfdriver4mto.ovcase', LIVE.ovCase);
+  LIVE.ovCase = c || ''; writeUIStorage('nullflux.ovcase', LIVE.ovCase);
   const sel = $('ov-case');
   if (c && sel && ![...sel.options].some(o => o.value === c)) sel.insertAdjacentHTML('beforeend', `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`);
   if (sel) sel.value = LIVE.ovCase;

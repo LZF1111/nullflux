@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """轻量 OpenFOAM 流场后处理（只用 numpy/scipy/matplotlib，不依赖 ParaView）。
-只读算例：网格派生量（单元中心、体积）缓存到 ~/.cache/cfdriver_post，不往算例目录写任何东西。
+只读算例：网格派生量（单元中心、体积）缓存到 ~/.cache/nullflux_post，不往算例目录写任何东西。
   post_field.py info  <case> [time]
   post_field.py slice <case> <json-args>       输出 PNG + JSON（stdout 最后一行）
 支持重构算例（case/<t>/）与分解算例（processor*/<t>/），binary/ascii，标量与矢量。"""
@@ -8,7 +8,7 @@ import sys, os, re, json, glob, gzip, hashlib, tempfile, warnings
 import numpy as np
 warnings.filterwarnings('ignore')
 
-CACHE = os.path.expanduser('~/.cache/cfdriver_post')
+CACHE = os.path.expanduser('~/.cache/nullflux_post')
 
 def _read(path):
     if os.path.exists(path): return open(path, 'rb').read()

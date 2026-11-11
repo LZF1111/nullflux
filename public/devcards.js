@@ -1,4 +1,4 @@
-// CFDriver 偏离审批卡片：任务算例里 deviations.log.md 的每条偏离一张卡（证据图 + 批准 / 不批准 / 要求修改）。
+// NullFlux 偏离审批卡片：任务算例里 deviations.log.md 的每条偏离一张卡（证据图 + 批准 / 不批准 / 要求修改）。
 // 决定攒齐后一次提交：服务器写回登记文件和任务状态，再作为一条用户消息发给智能体。
 // 依赖 app.js 的全局：TASKS_UI, ws, addUser, addSystem, setRunning, toast, handleMessage；viewer.js 的 CFDView.lightbox。
 (() => {

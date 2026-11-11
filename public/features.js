@@ -1,4 +1,4 @@
-// CFDriver 工作台增强：项目、拖入/粘贴、文件树右键与 git 状态、快速打开、全文搜索、
+// NullFlux 工作台增强：项目、拖入/粘贴、文件树右键与 git 状态、快速打开、全文搜索、
 // 命令面板、Markdown/CSV 预览、OpenFOAM 字典高亮、消息操作、导出、主题、系统通知、快捷键表。
 // 依赖 app.js 的全局：$, ws, attachments, renderAttachments, openFile, addSystem, toast, send, SLASH_COMMANDS 等。
 (() => {
@@ -630,7 +630,7 @@ if (typeof handleMessage === 'function') {
     try {
       if (m.type === 'task_complete') sysNotify('任务完成', m.summary);
       else if (m.type === 'approval_request') sysNotify('需要审批', `${m.name}: ${m.args?.command || ''}`);
-      else if (m.type === 'agent_end' && !document.hasFocus()) sysNotify('智能体已停下', '回到 CFDriver 查看结果');
+      else if (m.type === 'agent_end' && !document.hasFocus()) sysNotify('智能体已停下', '回到 NullFlux 查看结果');
     } catch {}
     return _hm.apply(this, arguments);
   };

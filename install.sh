@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# CFDriver one-line installer (Linux / macOS / WSL)
+# NullFlux one-line installer (Linux / macOS / WSL)
 #   curl -fsSL https://raw.githubusercontent.com/LZF1111/nullflux/main/install.sh | bash
 set -e
-DIR="${CFDRIVER_DIR:-$HOME/cfdriver}"
+DIR="${NULLFLUX_DIR:-$HOME/nullflux}"
 REPO="https://github.com/LZF1111/nullflux.git"
 if ! command -v node >/dev/null 2>&1; then
 	echo "需要 Node.js 18 或更高版本：https://nodejs.org/ （或 nvm install 20）"; exit 1

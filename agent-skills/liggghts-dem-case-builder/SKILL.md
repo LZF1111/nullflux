@@ -11,8 +11,8 @@ license: MIT
 # LIGGGHTS 离散元 (DEM) 技能
 
 ## 环境
-- 可执行文件：`~/vibtray/bin/lmp_auto`（LIGGGHTS-PUBLIC 3.8.0，OpenMPI，无 VTK 输出）。
-- 运行：在算例目录 `mpirun -np N ~/vibtray/bin/lmp_auto -in in.xxx -log log.liggghts > out.liggghts 2>&1`。
+- 可执行文件：`lmp_auto`（LIGGGHTS-PUBLIC 3.8.0，OpenMPI，无 VTK 输出）。
+- 运行：在算例目录 `mpirun -np N lmp_auto -in in.xxx -log log.liggghts > out.liggghts 2>&1`。
   用 lbm_run_async 或 run_command 后台启动后，用 solver_wait 等待（日志里的进度行是 thermo 的 Step 行，不是 OpenFOAM 的 Time =）。
 - 后处理用 python3 + numpy + matplotlib。**Python 一律 Tab 缩进**。
 

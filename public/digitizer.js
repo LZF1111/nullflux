@@ -1,5 +1,5 @@
 ﻿// ============================================================
-// CFDriver Digitizer — manual data extraction from plot images
+// NullFlux Digitizer — manual data extraction from plot images
 // 类 WebPlotDigitizer 的本地实现（axis-aligned 2D 坐标图）
 // 公开 API:
 //   window.NFDigitizer.open({ imageUrl?, imageBase64?, name?, hint?, onDone(result) })

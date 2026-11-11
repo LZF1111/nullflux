@@ -14,7 +14,7 @@ const FATAL = '--> FOAM FATAL IO ERROR: (openfoam-2306)\nEntry \'div(phi,U)\' no
 
 test('read-only commands that merely show an error are not solver launches', () => {
   for (const c of [
-    'cd ~/cases/pilot3D && sed -n 1,400p deviations.log.md | head -150',
+    'cd ~/cases/caseA && sed -n 1,400p deviations.log.md | head -150',
     'cd c && grep -n "FOAM FATAL" log.reactingTwoPhaseEulerFoam | tail -3',
     'tail -n 200 log.snappyHexMesh',
     'cat log.blockMesh; ls',

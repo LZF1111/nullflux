@@ -3,7 +3,7 @@
 可移植的 **Agent Skill** 包，让任意主流智能体（Claude / GitHub Copilot / Cursor / Cline /
 Codex 等支持 Skill 挂载的 agent）具备**生成仿真算例配置文件与算法源码**的领域能力。
 
-从 CFDriver（OpenFOAM/MFiX/LBM 仿真 agent）与 MDriver（LAMMPS 分子动力学 agent）的实战经验拆解而来。
+从 NullFlux（OpenFOAM/MFiX/LBM 仿真 agent）与 MDriver（LAMMPS 分子动力学 agent）的实战经验拆解而来。
 核心特点：**每个 skill 内置对应软件的官方源码作为"算法背板"**——智能体生成字典/代码前先对齐真实官方源码，
 杜绝凭记忆杜撰 API。skill 只产出完整代码文件，实际求解交给用户本机的求解器执行。
 

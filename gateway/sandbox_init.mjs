@@ -1,5 +1,5 @@
 // 在 bwrap 沙箱里运行（独立网络命名空间，只有 lo）：
-//   ~/.run/web.sock  →  127.0.0.1:5300（本沙箱里的 CFDriver），网关从外面连这个 unix socket
+//   ~/.run/web.sock  →  127.0.0.1:5300（本沙箱里的 NullFlux），网关从外面连这个 unix socket
 //   127.0.0.1:3128  →  ~/.run/egress.sock（网关的出网代理，网关决定能连哪里）
 // 管理用：sandbox_init.mjs --exec "<bash 命令>" 只起出网转发，然后跑命令（网关 exec 子命令用）
 import net from 'node:net';

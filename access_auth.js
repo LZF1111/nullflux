@@ -74,12 +74,12 @@ export function authMiddleware(getToken) {
 }
 
 const LOGIN_HTML = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1"><title>CFDriver · 登录</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>NullFlux · 登录</title>
 <style>body{margin:0;min-height:100dvh;display:grid;place-items:center;font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:#f6f6f7;color:#111}
 form{width:min(340px,88vw);display:flex;flex-direction:column;gap:12px;padding:24px;border-radius:16px;background:#fff;box-shadow:0 4px 24px rgba(0,0,0,.06)}
 h1{font-size:20px;margin:0 0 4px}p{margin:0;color:#6b6b70;font-size:14px}
 input{height:44px;padding:0 12px;border:1px solid #ddd;border-radius:10px;font-size:16px}
 button{height:44px;border:0;border-radius:10px;background:#111;color:#fff;font-size:16px;font-weight:600}</style></head>
-<body><form method="get" action="/app"><h1>CFDriver</h1><p>远程访问需要口令（服务启动日志里可以看到）。</p>
+<body><form method="get" action="/app"><h1>NullFlux</h1><p>远程访问需要口令（服务启动日志里可以看到）。</p>
 <label for="t" class="sr">访问口令</label><input id="t" name="token" type="password" autocomplete="current-password" required autofocus>
 <button type="submit">进入</button></form></body></html>`;

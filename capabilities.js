@@ -1,4 +1,4 @@
-// CFDriver 能力层：求解器环境自动探测、官方技能包、MCP 客户端（stdio JSON-RPC）。
+// NullFlux 能力层：求解器环境自动探测、官方技能包、MCP 客户端（stdio JSON-RPC）。
 // 不依赖 server.js 的全局；server.js 只负责接线（端点、提示词、工具表）。
 import { spawn, execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
@@ -125,7 +125,7 @@ export class McpServer {
     const fail = msg => { this.status = 'error'; this.error = msg; for (const cb of this.pending.values()) cb({ error: { message: msg } }); this.pending.clear(); };
     p.on('error', e => fail('启动失败：' + e.message));
     p.on('exit', code => { if (this.status !== 'stopped') fail(`进程退出（${code}）${errTail ? '：' + errTail.trim().split('\n').pop() : ''}`); });
-    await this.request('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'CFDriver', version: '1.0' } }, 20000);
+    await this.request('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'NullFlux', version: '1.0' } }, 20000);
     this.notify('notifications/initialized', {});
     const r = await this.request('tools/list', {}, 20000);
     this.tools = (r.tools || []).map(t => ({ name: t.name, description: t.description || '', inputSchema: t.inputSchema || { type: 'object', properties: {} } }));

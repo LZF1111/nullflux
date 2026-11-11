@@ -2,7 +2,7 @@
 
 ## B1 单颗粒落板回弹（2026-11-11）
 - d = 100 µm, ρ = 10000 kg/m³, E = 5 MPa, ν = 0.3, μ = 0.4, hertz + tangential history, dt = 2e-8 s。
-- 输入 `~/vibtray/bench/b1_bounce/in.bounce`，回弹速度取接触后最大上行速度。
+- 输入 `~/demcase/bench/b1_bounce/in.bounce`，回弹速度取接触后最大上行速度。
 
 | 设定 e | v_in = 0.1 m/s | v_in = 0.5 m/s |
 |---|---|---|

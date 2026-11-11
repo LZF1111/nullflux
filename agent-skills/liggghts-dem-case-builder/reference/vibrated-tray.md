@@ -1,9 +1,9 @@
-# LIGGGHTS 振动托盘 DEM 指南（CFDriver 垂直领域：vibtray）
+# LIGGGHTS 振动托盘 DEM 指南
 
 适用：薄层颗粒在振动托盘/振动盘/振动筛上的运动，振动波形设计、托盘结构对比、镀膜/混合均匀性评估。
 
 ## 0. 环境（my-server）
-- 可执行文件：`~/vibtray/bin/lmp_auto`（LIGGGHTS-PUBLIC 3.8.0，MPI，无 VTK）。运行：`mpirun -np N ~/vibtray/bin/lmp_auto -in in.xxx -log log.liggghts`。
+- 可执行文件：`lmp_auto`（LIGGGHTS-PUBLIC 3.8.0，MPI，无 VTK）。运行：`mpirun -np N lmp_auto -in in.xxx -log log.liggghts`。
 - 核数：先看 `uptime` 的负载，总负载不超过 90；单个算例 8–32 核即可，颗粒数 / 核数 ≥ 5000 才划算。
 - 没有 GPU。后处理用 python3 + numpy + matplotlib（服务器有）。
 - 写 Python 一律用 Tab 缩进（工具参数里连续 8 个以上空格会被中转通道吞掉）。

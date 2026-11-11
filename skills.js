@@ -1,5 +1,5 @@
 // ============================================================================
-// skills.js —— CFDriver 经验自进化模块（独立、可导出、verifier-grounded）
+// skills.js —— NullFlux 经验自进化模块（独立、可导出、verifier-grounded）
 // ----------------------------------------------------------------------------
 // 设计原则（每条都是为了"避坑"而焊死的）：
 //  1. 只沉淀「verifier 盖章通过」的经验 → grounded，杜绝模型自夸幻觉。
@@ -447,7 +447,7 @@ export function buildSftSample(messages = [], meta = {}) {
   if (sys) out.push({ role: 'system', content: String(sys.content || '').slice(0, 8000) });
   out.push(...conv);
   return {
-    schema: 'cfdriver-sft-v1', verified: true, verified_by: a.verifiers,
+    schema: 'nullflux-sft-v1', verified: true, verified_by: a.verifiers,
     case_path: a.casePath, run_id: a.runId,
     domain: meta.domain || '', label: meta.label || '', ts: Date.now(),
     messages: out,

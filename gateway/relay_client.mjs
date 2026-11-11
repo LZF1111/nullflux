@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// CFDriver 出网助手：在你自己的电脑上运行，让服务器上你的 CFDriver 通过你这台电脑的网络访问模型 API。
-// 只需要 Node.js 22+（https://nodejs.org）。运行：  node cfdriver-net-helper.mjs
-// 关掉这个窗口就断开；服务器上的 CFDriver 会改回直连。
+// NullFlux 出网助手：在你自己的电脑上运行，让服务器上你的 NullFlux 通过你这台电脑的网络访问模型 API。
+// 只需要 Node.js 22+（https://nodejs.org）。运行：  node nullflux-net-helper.mjs
+// 关掉这个窗口就断开；服务器上的 NullFlux 会改回直连。
 // 安全：只替你的账号转发；不代为连接你电脑本机和内网地址（127.x / 10.x / 172.16–31.x / 192.168.x）。
 import net from 'node:net';
 import dns from 'node:dns/promises';
@@ -34,7 +34,7 @@ function connect() {
   const send = b => { try { ws.send(b); } catch (e) { /* 已断开 */ } };
   ws.onopen = () => {
     backoff = 1000;
-    console.log(`[${new Date().toLocaleTimeString()}] 已连上 CFDriver 服务器，开始代为联网（关掉窗口即停止）`);
+    console.log(`[${new Date().toLocaleTimeString()}] 已连上 NullFlux 服务器，开始代为联网（关掉窗口即停止）`);
   };
   ws.onmessage = async ev => {
     const buf = Buffer.from(ev.data instanceof ArrayBuffer ? new Uint8Array(ev.data) : ev.data);
@@ -69,6 +69,6 @@ function connect() {
   };
   ws.onerror = () => { /* onclose 会接着触发并重连 */ };
 }
-console.log('CFDriver 出网助手\n服务器：' + URL_.replace(/\/gw\/relay$/, ''));
+console.log('NullFlux 出网助手\n服务器：' + URL_.replace(/\/gw\/relay$/, ''));
 connect();
 setInterval(() => { if (opened) console.log(`  已转发 ${opened} 个连接，${(bytes / 1048576).toFixed(1)} MB`); }, 600000);

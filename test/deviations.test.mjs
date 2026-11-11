@@ -10,9 +10,9 @@ process.env.NF_LESSON_FILE = path.join(tmp, 'lessons.jsonl');
 const D = await import('../deviations.js');
 const F = await import('../fidelity.js');
 
-// pilot3D_r2 的登记原样（智能体实际写出来的格式）
+// caseA_r2 的登记原样（智能体实际写出来的格式）
 const R2 = [
-  '# 偏离 / 补值登记 — pilot3D_r2（Lu et al. 2016 CES 143:341，3D 全回路）',
+  '# 偏离 / 补值登记 — caseA_r2（Lu et al. 2016 CES 143:341，3D 全回路）',
   '# 状态：PENDING = 待用户批准；APPROVED = 已批准；INFO = 读图值/原文未给的补值（非简化）',
   '',
   '[DEV-R2-001] APPROVED  恢复系数 e = 0.9（原文 Table 2 出现 e，未给值；用户任务书批准）',
@@ -34,7 +34,7 @@ const R2 = [
   '[INFO-R2-008] 原文 §2.4 气相含惰性 CO2，但 Table 1 未给流量 → 不加 CO2（进料严格按 Table 1）',
   '',
 ].join('\n');
-const REPRO = '从零复现 Lu et al. (2016) 论文的中试 DMTO 鼓泡床 3D 全回路 CFD，必须 3D 按原文';
+const REPRO = '从零复现 Smith et al. (2020) 论文的中试 FCC 鼓泡床 3D 全回路 CFD，必须 3D 按原文';
 
 function workspace(log) {
   const root = fs.mkdtempSync(path.join(tmp, 'ws-'));

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CFDriver 三维后处理工作进程（VTK，常驻）。stdin 每行一个 JSON 请求 {id, cmd, args}，stdout 每行一个 JSON 回复。
+"""NullFlux 三维后处理工作进程（VTK，常驻）。stdin 每行一个 JSON 请求 {id, cmd, args}，stdout 每行一个 JSON 回复。
 只读算例：唯一写入的是算例根目录下一个空的 .cfdpost.foam（vtkOpenFOAMReader 需要一个文件名来定位算例）。
 命令：
   info   {case}                         时刻、场（标量/矢量）、边界 patch（类型、是否 wedge）、包围盒、重力方向

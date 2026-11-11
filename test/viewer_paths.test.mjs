@@ -13,7 +13,7 @@ const inText = s => [...ctx.textCandidates(s)].map(c => c.raw + (c.line ? ':' + 
 
 test('paths in plain text are found, with an optional line number', () => {
   assert.deepEqual(inText('结果在 cstr_table5.json，图见 figs/mesh_slice.png。'), ['cstr_table5.json', 'figs/mesh_slice.png']);
-  assert.deepEqual(inText('见 system/controlDict.orig:42 和 ~/mto_repro/cases/a/PROGRESS.md'), ['system/controlDict.orig:42', '~/mto_repro/cases/a/PROGRESS.md']);
+  assert.deepEqual(inText('见 system/controlDict.orig:42 和 ~/projects/cases/a/PROGRESS.md'), ['system/controlDict.orig:42', '~/projects/cases/a/PROGRESS.md']);
   assert.deepEqual(inText('已写入 `x`（./tools/plot.py）'), ['./tools/plot.py']);
 });
 
@@ -28,7 +28,7 @@ test('inline code: paths and extension-less dictionaries qualify, commands and n
   assert.deepEqual({ ...c('system/fvSolution') }, { raw: 'system/fvSolution', line: 0 });
   assert.deepEqual({ ...c('deviations.log.md') }, { raw: 'deviations.log.md', line: 0 });
   assert.deepEqual({ ...c('tools/post.py:118') }, { raw: 'tools/post.py', line: 118 });
-  assert.deepEqual({ ...c('/home/user/mto_repro/cases/a/0/U') }, { raw: '/home/user/mto_repro/cases/a/0/U', line: 0 });
+  assert.deepEqual({ ...c('/home/user/projects/cases/a/0/U') }, { raw: '/home/user/projects/cases/a/0/U', line: 0 });
   for (const s of ['mpirun -np 88 solver', 'maxCo', '0.63', '1.3e-4', 'alpha.gas', 'a b/c.png', 'x', 'foo(bar)', 'k=v'])
     assert.equal(c(s) === null || (s === 'alpha.gas' && c(s).raw === 'alpha.gas'), true, s);
 });

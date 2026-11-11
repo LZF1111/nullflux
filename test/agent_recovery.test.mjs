@@ -21,7 +21,7 @@ function fixture(options = {}) {
   const timers = new Map();
   const writes = [];
   const calls = [];
-  const task = { id: 'mto', autoMode: true, messages: [
+  const task = { id: 'job1', autoMode: true, messages: [
     { role: 'assistant', tool_calls: [{ id: 'done' }] },
     { role: 'tool', tool_call_id: 'done', content: 'solver already launched' },
   ] };
@@ -232,7 +232,7 @@ test('server runAgent recovers after a completed tool without replay or syntheti
     if (llmCalls === 2) throw new Error('fetch failed');
     return { role: 'assistant', content: 'Result checked.' };
   };
-  await context.sandbox.runAgent(context.ws, 'Continue MTO.', []);
+  await context.sandbox.runAgent(context.ws, 'Continue FCC.', []);
   assert.equal(toolCalls, 1, JSON.stringify({ llmCalls, events: context.events }));
   assert.equal(context.task.recovery.status, 'pending');
   const savedHistory = structuredClone(context.task.messages);
@@ -279,8 +279,8 @@ test('server _flushWake cannot bypass pending recovery or start another agent', 
   const context = serverHarness();
   context.manager.failure(context.task, new Error('API 503'));
   context.sandbox.runAgent = () => { assert.fail('wake bypassed recovery backoff'); };
-  vm.runInContext("_wakePending.set('mto', { runs: [{ runId: 'solver' }], timer: null }); _flushWake('mto');", context.sandbox);
-  assert.equal(vm.runInContext("_wakePending.get('mto').runs.length", context.sandbox), 1);
+  vm.runInContext("_wakePending.set('job1', { runs: [{ runId: 'solver' }], timer: null }); _flushWake('job1');", context.sandbox);
+  assert.equal(vm.runInContext("_wakePending.get('job1').runs.length", context.sandbox), 1);
 });
 
 test('server auth error persists failed state and has no recovery timer', async () => {
@@ -341,7 +341,7 @@ test('a reply cut off by the length limit or a broken stream is continued, at mo
 test('server task writes use rename, reload recovery, and preserve old file on rename failure', t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-recovery-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
-  const task = { id: 'mto', messages: [], todos: [], autoMode: true,
+  const task = { id: 'job1', messages: [], todos: [], autoMode: true,
     recovery: { attempt: 2, nextAt: 60_000, lastError: 'timeout', status: 'pending' }, _runtime: 'not persisted' };
   const operations = [];
   const sandbox = vm.createContext({
@@ -360,11 +360,11 @@ test('server task writes use rename, reload recovery, and preserve old file on r
   sandbox.loadAllTasks();
   assert.equal(sandbox.TASKS.get(task.id).recovery.attempt, 2);
   assert.equal(sandbox.TASKS.get(task.id)._runtime, undefined);
-  const before = fs.readFileSync(path.join(directory, 'mto.json'), 'utf8');
+  const before = fs.readFileSync(path.join(directory, 'job1.json'), 'utf8');
   sandbox.fssync.renameSync = () => { throw new Error('disk error'); };
   task.recovery.attempt = 3;
   sandbox.persistTaskNow(task);
-  assert.equal(fs.readFileSync(path.join(directory, 'mto.json'), 'utf8'), before);
+  assert.equal(fs.readFileSync(path.join(directory, 'job1.json'), 'utf8'), before);
   sandbox.TASKS.clear();
   sandbox.loadAllTasks();
   assert.equal(sandbox.TASKS.size, 1);

@@ -1,4 +1,4 @@
-// CFDriver 设置页：左侧分区 + 右侧内容（对齐 OpenChamber）。
+// NullFlux 设置页：左侧分区 + 右侧内容（对齐 OpenChamber）。
 // 复用 app.js 已有的模型连接 / Python / 工具开关控件（整块搬进来，事件处理不变），其余分区用新接口：
 //   /api/env（求解器环境，自动探测，只读）· /api/packs（官方技能包）· /api/mcp（MCP 服务）
 (() => {
@@ -53,7 +53,7 @@
     skills:     '技能 skill 技能包 领域 foam lbm mfix general ai 经验',
     mcp:        'mcp 服务 工具 stdio 插件 协议 外部 server',
     env:        '求解器 环境 openfoam mfix lbm 路径 探测 bash wm 安装',
-    about:      '关于 版本 信息 作者 cfdriver changelog',
+    about:      '关于 版本 信息 作者 nullflux changelog',
   };
   const stSearch = $('st-search');
   if (stSearch) {
@@ -201,7 +201,7 @@
     keybinds() {
       const defaults = typeof DEFAULT_KEYBINDS !== 'undefined' ? DEFAULT_KEYBINDS : {};
       const custom   = typeof customKeybinds   !== 'undefined' ? customKeybinds   : {};
-      const save     = typeof KEYBINDS_KEY     !== 'undefined' ? KEYBINDS_KEY     : 'cfdriver4mto.keybinds';
+      const save     = typeof KEYBINDS_KEY     !== 'undefined' ? KEYBINDS_KEY     : 'nullflux.keybinds';
       function fmtKey(str) {
         return str.split('+').map(s => `<kbd>${esc(s.trim())}</kbd>`).join('<span style="font-size:10px;padding:0 2px;color:var(--faint)">+</span>');
       }
@@ -328,9 +328,9 @@
       if (me && me.user) {
         const box = document.createElement('div');
         box.innerHTML = card(`用我电脑的网络 ${me.relay ? badge(true, '助手在线') : '<span class="st-badge">未运行</span>'}`,
-          `<p class="st-hint">服务器所在网络需要上网认证，模型接口如果是外网地址可能连不上。在你自己的电脑上运行「出网助手」，服务器上你的 CFDriver 就会通过你电脑的网络访问模型；关掉助手即恢复直连。只替你的账号转发，不会连你电脑上的本机或内网服务。</p>`
+          `<p class="st-hint">服务器所在网络需要上网认证，模型接口如果是外网地址可能连不上。在你自己的电脑上运行「出网助手」，服务器上你的 NullFlux 就会通过你电脑的网络访问模型；关掉助手即恢复直连。只替你的账号转发，不会连你电脑上的本机或内网服务。</p>`
    + (me.relay ? row('来自', `<code>${esc(me.relay.host)}</code>`, `已连接 ${Math.round((Date.now() - me.relay.since) / 60000)} 分钟`) : '')
-          + `<ol class="st-steps"><li>装 <a href="https://nodejs.org" target="_blank" rel="noopener">Node.js 22+</a>（装过就跳过）</li><li><a class="st-btn" href="/gw/relay.mjs" download>下载出网助手</a>（里面带你的账号凭证，别发给别人）</li><li>在下载目录打开终端：<code>node cfdriver-net-helper.mjs</code>，看到"已连上"后回来点「测试连接」</li></ol>`);
+          + `<ol class="st-steps"><li>装 <a href="https://nodejs.org" target="_blank" rel="noopener">Node.js 22+</a>（装过就跳过）</li><li><a class="st-btn" href="/gw/relay.mjs" download>下载出网助手</a>（里面带你的账号凭证，别发给别人）</li><li>在下载目录打开终端：<code>node nullflux-net-helper.mjs</code>，看到"已连上"后回来点「测试连接」</li></ol>`);
  $('st-model-status').after(box.firstChild);
       }
       // 保存连接后自动测一次，用户马上知道填得对不对
@@ -547,7 +547,7 @@
       const cfg = await api('/api/config');
       const me = await fetch('/gw/me').then(r => r.ok ? r.json() : null).catch(() => null);
       body.innerHTML = (me && me.user ? card('账号', row('当前登录', `<b>${esc(me.user)}</b>`, '你的模型 API、算例和对话只有你自己能看到') + row('', '<a class="st-btn" href="/gw/logout">退出登录</a>')) : '')
-        + card('CFDriver', row('定位', '面向反应器的 CFD 智能体：前处理、求解、后处理、复现与优化') + row('作者', esc(cfg.author || 'LZF')) + row('平台', esc(cfg.platform)) + row('工作区', `<code>${esc(cfg.workspace)}</code>`))
+        + card('NullFlux', row('定位', '面向多相流的 CFD 智能体：前处理、求解、后处理、论文复现') + row('作者', esc(cfg.author || 'NullFlux contributors')) + row('平台', esc(cfg.platform)) + row('工作区', `<code>${esc(cfg.workspace)}</code>`))
         + card('相关页面', row('可视化', '<a href="/post" target="_blank" rel="noopener">/post</a>', '结果 + 网格与几何') + row('实时监视', '<a href="/monitor" target="_blank" rel="noopener">/monitor</a>', '求解进度、机器负载、RSI'));
     },
   };

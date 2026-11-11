@@ -1,4 +1,4 @@
-// CFDriver 文件查看器增强（对标 OpenChamber）：预览标签与标签菜单、图片缩放平移、视频预览、
+// NullFlux 文件查看器增强（对标 OpenChamber）：预览标签与标签菜单、图片缩放平移、视频预览、
 // 磁盘变更自动重载、保存状态、对话里的可点击路径与内联图片。
 // 依赖 app.js / features.js 的全局：tabs, activeTab, editor, monacoReady, openFile, openImage, renderTabs, saveActive,
 // renderMarkdownInto, closeTab, openArtifact, previewToolbar, markPreviewTab, rawUrl, showView, panelVis, TASKS_UI, ARTIFACTS, FX。

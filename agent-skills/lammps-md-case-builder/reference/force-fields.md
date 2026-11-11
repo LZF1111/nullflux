@@ -32,7 +32,7 @@
 ## ReaxFF ffield 力场文件选择（元素体系决定）
 
 ReaxFF 势文件形如 `ffield.reax.<体系>`，`pair_coeff * * ffield.reax.X <元素列表>` 的元素顺序
-= data 里的 atom type 顺序。常见体系（来自 CFDriver/MDriver 实战目录）：
+= data 里的 atom type 顺序。常见体系（来自 NullFlux/MDriver 实战目录）：
 
 | ffield | 元素 | 适用 |
 | --- | --- | --- |

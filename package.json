@@ -1,16 +1,16 @@
 {
-  "name": "cfdriver",
-  "displayName": "CFDriver",
+  "name": "nullflux",
+  "displayName": "NullFlux",
   "version": "10.1.0",
-  "author": "Zifeng Li <lizifeng@ipe.ac.cn>",
-  "description": "CFDriver: an agent workbench for multiphase CFD (OpenFOAM / MFIX / LBM / DEM) with paper-reproduction checks and unattended long runs",
+  "author": "NullFlux contributors",
+  "description": "NullFlux: an open-source agent workbench for multiphase CFD (OpenFOAM / MFIX / LBM / DEM)",
   "type": "module",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "test:foundation": "node --test test/access_auth.test.mjs test/notify.test.mjs test/external_runs.test.mjs test/api_config.test.mjs test/ui_simplification.test.mjs test/agent_recovery.test.mjs test/task_transport.test.mjs test/ui_permissions.test.mjs test/run_registry.test.mjs test/cfd_trial.test.mjs test/opt_validation.test.mjs test/verified_learning.test.mjs test/fidelity.test.mjs test/monitor.test.mjs",
     "test:integration": "node --test test/e2e_detached_agent.mjs test/e2e_recovery_live.mjs test/_e2e_longrun.mjs test/e2e_question.mjs",
-    "test": "node --test test/access_auth.test.mjs test/agent_core.test.mjs test/agent_opt_1107.test.mjs test/agent_recovery.test.mjs test/api_config.test.mjs test/cfd_trial.test.mjs test/dem_runs.test.mjs test/deviations.test.mjs test/err_budget.test.mjs test/evolve.test.mjs test/external_runs.test.mjs test/fidelity.test.mjs test/foam_postproc.test.mjs test/lean_prompt.test.mjs test/lean_tools.test.mjs test/llm_retry.test.mjs test/monitor.test.mjs test/notify.test.mjs test/opt_validation.test.mjs test/orchestration.test.mjs test/path_resolve.test.mjs test/prune_tool_results.test.mjs test/revert_1109.test.mjs test/run_registry.test.mjs test/run_shell_detach.test.mjs test/run_shell_tree.test.mjs test/solver_wait_all.test.mjs test/task_transport.test.mjs test/ui_permissions.test.mjs test/ui_simplification.test.mjs test/v102_fixes.test.mjs test/verified_learning.test.mjs test/viewer_paths.test.mjs test/wakeable_sleep.test.mjs"
+    "test": "node --test test/access_auth.test.mjs test/agent_core.test.mjs test/agent_opt_1107.test.mjs test/agent_recovery.test.mjs test/api_config.test.mjs test/cfd_trial.test.mjs test/dem_runs.test.mjs test/deviations.test.mjs test/err_budget.test.mjs test/evolve.test.mjs test/external_runs.test.mjs test/fidelity.test.mjs test/foam_postproc.test.mjs test/lean_prompt.test.mjs test/lean_tools.test.mjs test/llm_retry.test.mjs test/monitor.test.mjs test/notify.test.mjs test/opt_validation.test.mjs test/path_resolve.test.mjs test/prune_tool_results.test.mjs test/revert_1109.test.mjs test/run_registry.test.mjs test/run_shell_detach.test.mjs test/run_shell_tree.test.mjs test/solver_wait_all.test.mjs test/task_transport.test.mjs test/ui_permissions.test.mjs test/ui_simplification.test.mjs test/v102_fixes.test.mjs test/verified_learning.test.mjs test/viewer_paths.test.mjs test/wakeable_sleep.test.mjs"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

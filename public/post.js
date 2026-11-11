@@ -1,4 +1,4 @@
-// CFDriver 可视化工作台：结果（截面 / 剖切 / 等值面 / 阈值 / 流线 / 矢量 / 体渲染 / 沿线取值）+ 网格与几何（patch、网格线、checkMesh）
+// NullFlux 可视化工作台：结果（截面 / 剖切 / 等值面 / 阈值 / 流线 / 矢量 / 体渲染 / 沿线取值）+ 网格与几何（patch、网格线、checkMesh）
 // 几何由服务端 VTK 常驻进程计算（/api/post3d/*），这里只负责显示、交互和"聪明的默认值"。
 import * as THREE from 'three';
 import { OrbitControls } from '/vendor/three/controls/OrbitControls.js';

@@ -1,3 +1,0 @@
-Seeds share the same equal-area-band layout; each file is self-contained because candidates may only import math.
-s0_uniform211 is the CONTROL: an equivalent of the current 211-hole design. Running it through the pipeline must
-reproduce cases/pilot3D Fig.12b min/wall within control_tol, otherwise the pipeline itself is wrong.

@@ -66,7 +66,7 @@ test('core count: -np, -n, and mpirun inside a job script', () => {
   assert.equal(ctx._npOf('head -n 20 log.cold'), 1);
   // 包装脚本把核数作为位置参数：launch.sh <dir> <np> <in> ...，脚本里 np=$2; mpirun -np $np
   fs.writeFileSync(path.join(d, 'launch.sh'), '#!/bin/bash\ncd "$1" || exit 1\nnp=$2; inp=$3; shift 3\n/usr/bin/time -p mpirun -np $np /x/lmp_auto -in $inp "$@" -log log.liggghts\n');
-  assert.equal(ctx._npOf('./launch.sh /home/user/vibtray/A/gscan/G0.8 4 in.vib -var f 60', d), 4);
+  assert.equal(ctx._npOf('./launch.sh /home/user/demcase/A/gscan/G0.8 4 in.vib -var f 60', d), 4);
   assert.equal(ctx._npOf('bash launch.sh /a 12 in.vib', d), 12);
   // 直接写 mpirun -np $1 的脚本
   fs.writeFileSync(path.join(d, 'go.sh'), 'mpirun -np $1 ./lmp_auto -in in.x\n');
@@ -111,7 +111,7 @@ test('old tool-call arguments are cut to head and tail, recent ones and small on
 test('loosely worded reproduction requests still switch on the paper kit and the fidelity gate', () => {
   const re = eval(/const _WANT_PAPER_RE = (\/.*\/i);/.exec(src)[1]);
   const tools = eval(/const _WANT_PAPER_TOOLS_RE = (\/.*\/i);/.exec(src)[1]);
-  for (const s of ['照着这篇文献把反应器算一下', '按附件这篇文章的条件做一遍，看结果对不对', '把 Lu 2016 的结果重现出来', '复现论文 Lu 2016 的中试 DMTO 反应器']) {
+  for (const s of ['照着这篇文献把反应器算一下', '按附件这篇文章的条件做一遍，看结果对不对', '把 Smith 2020 的结果重现出来', '复现论文 Smith 2020 的中试 FCC 反应器']) {
     assert.equal(re.test(s), true, s);
     assert.equal(tools.test(s), true, s);
     assert.equal(isRepro(s), true, s);

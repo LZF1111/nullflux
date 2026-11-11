@@ -3,8 +3,8 @@
 ## 从源码运行
 
 ```bash
-git clone https://github.com/LZF1111/nullflux.git cfdriver
-cd cfdriver
+git clone https://github.com/LZF1111/nullflux.git nullflux
+cd nullflux
 npm install
 node server.js --port 5174
 ```
@@ -67,4 +67,4 @@ npm test
 - 不要提交 `settings.json`、`.env`、`tasks/`、日志、论文 PDF 或算例结果。
 - 涉及仿真行为的改动，请说明在哪个算例上验证过。
 
-有问题或想深度合作：lizifeng@ipe.ac.cn
+合作联系：lizifeng@ipe.ac.cn

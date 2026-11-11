@@ -12,7 +12,7 @@ vm.runInContext(grab('const V9_PROMPT_BLOCK', '\nfunction buildSystemPrompt').re
 vm.runInContext(grab('function _firstJsonObject', '\n// 4) 通用视觉 Verifier'), ctx);
 
 const plain = '二维鼓泡流化床，twoPhaseEulerFoam 算到 6 s，求压降';
-const paper = '复现论文 Lu 2016 的 DMTO 曳力模型';
+const paper = '复现论文 Smith 2020 的 FCC 曳力模型';
 
 test('lean base prompt is much shorter and keeps core rules', () => {
   const full = ctx.SYSTEM_PROMPT_BASE('/w');

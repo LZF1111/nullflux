@@ -1,6 +1,6 @@
 {
-  "name": "CFDriver",
-  "short_name": "CFDriver",
+  "name": "NullFlux",
+  "short_name": "NullFlux",
   "description": "面向反应器复现、评估与优化的 CFD 智能体",
   "start_url": "/app",
   "scope": "/",

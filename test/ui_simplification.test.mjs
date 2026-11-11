@@ -116,7 +116,7 @@ test('inspector groups panels into tabs with sub-views and remembers the choice'
     localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     window: { dispatchEvent() {} }, Event: class {}, matchMedia: () => ({ matches: false }),
   });
-  vm.runInContext('let editor = null;\n' + sliceSource('// CFDriver frontend', '// ====================== Monaco 编辑器'), sandbox);
+  vm.runInContext('let editor = null;\n' + sliceSource('// NullFlux frontend', '// ====================== Monaco 编辑器'), sandbox);
   const run = code => vm.runInContext(code, sandbox);
   assert.equal(run('contextView'), 'status');
   assert.equal(run("isPanelVisible('live')"), true);
@@ -131,7 +131,7 @@ test('inspector groups panels into tabs with sub-views and remembers the choice'
   assert.equal(controls.get('ctx-sub').hidden, false);
   run("selectContext('files')");
   assert.equal(controls.get('ctx-sub').hidden, true);
-  const saved = JSON.parse(storage.get('cfdriver4mto.inspector.v3'));
+  const saved = JSON.parse(storage.get('nullflux.inspector.v3'));
   assert.equal(saved.context, 'files'); assert.equal(saved.sub.post, 'slice');
   run("setPanelVisible('skills', true)");
   assert.equal(panels.get('skills').style.display, '');
@@ -226,9 +226,9 @@ test('slash menu filters commands by prefix and description, and only for a bare
 });
 
 test('job paths map to workspace-relative case paths', () => {
-  const sandbox = vm.createContext({ LIVE: { workspace: '/home/u/mto_repro/' } });
+  const sandbox = vm.createContext({ LIVE: { workspace: '/home/u/projects/' } });
   vm.runInContext(sliceSource('function liveRel(', 'function liveRsi('), sandbox);
-  assert.equal(sandbox.liveRel('/home/u/mto_repro/cases/pilot3D'), 'cases/pilot3D');
+  assert.equal(sandbox.liveRel('/home/u/projects/cases/caseA'), 'cases/caseA');
   assert.equal(sandbox.liveRel('/elsewhere/x'), '/elsewhere/x');
 });
 

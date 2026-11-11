@@ -121,7 +121,7 @@ test('benchmark tasks that only cite a reference value do not pull in the paper-
   const m = /const _WANT_PAPER_RE = (\/.*\/i);/.exec(src);
   const re = eval(m[1]);
   assert.equal(re.test('完成文献基准算例：Hysing et al. 2009 二维气泡，与文献参考值比较'), false);
-  assert.equal(re.test('复现论文 Lu 2016 的 DMTO 曳力模型'), true);
+  assert.equal(re.test('复现论文 Smith 2020 的 FCC 曳力模型'), true);
   assert.equal(re.test('读一下这篇 paper.pdf 的边界条件'), true);
 });
 

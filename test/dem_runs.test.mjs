@@ -3,16 +3,16 @@ import assert from 'node:assert/strict';
 import { solverName, inferExitFromLog, pickCandidates } from '../external_runs.js';
 
 test('LIGGGHTS 可执行文件被识别为求解器', () => {
-	assert.equal(solverName(['/home/user/vibtray/bin/lmp_auto', '-in', 'in.patch']), 'lmp_auto');
+	assert.equal(solverName(['/opt/liggghts/bin/lmp_auto', '-in', 'in.patch']), 'lmp_auto');
 	assert.equal(solverName(['liggghts', '-in', 'in.x']), 'liggghts');
 	assert.equal(solverName(['python3', 'post.py']), '');
 });
 
 test('mpirun 下的 lmp_auto rank 不重复登记', () => {
 	const table = [
-		{ pid: 10, ppid: 1, argv: ['mpirun', '-np', '8', '/home/user/vibtray/bin/lmp_auto', '-in', 'in.patch'] },
-		{ pid: 11, ppid: 10, argv: ['/home/user/vibtray/bin/lmp_auto', '-in', 'in.patch'] },
-		{ pid: 12, ppid: 10, argv: ['/home/user/vibtray/bin/lmp_auto', '-in', 'in.patch'] },
+		{ pid: 10, ppid: 1, argv: ['mpirun', '-np', '8', '/opt/liggghts/bin/lmp_auto', '-in', 'in.patch'] },
+		{ pid: 11, ppid: 10, argv: ['/opt/liggghts/bin/lmp_auto', '-in', 'in.patch'] },
+		{ pid: 12, ppid: 10, argv: ['/opt/liggghts/bin/lmp_auto', '-in', 'in.patch'] },
 	];
 	const c = pickCandidates(table);
 	assert.equal(c.length, 1);
@@ -20,7 +20,7 @@ test('mpirun 下的 lmp_auto rank 不重复登记', () => {
 });
 
 test('LIGGGHTS 日志：mpirun 起的 lmp_auto 有 CR 也能识别', () => {
-	assert.equal(solverName(['mpirun', '-np', '8', '/home/user/vibtray/bin/lmp_auto', '-in', 'in.patch']), 'lmp_auto');
+	assert.equal(solverName(['mpirun', '-np', '8', '/opt/liggghts/bin/lmp_auto', '-in', 'in.patch']), 'lmp_auto');
 });
 
 test('server.js: _demLastTime 读 thermo 表的 Time 列', async () => {

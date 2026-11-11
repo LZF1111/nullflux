@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// CFDriver 多用户网关：账号登录 → 每个用户一个独立沙箱里的 CFDriver 实例 → 反向代理（HTTP + WebSocket）。
+// NullFlux 多用户网关：账号登录 → 每个用户一个独立沙箱里的 NullFlux 实例 → 反向代理（HTTP + WebSocket）。
 //
 //   node gateway.js serve [--port 5310]       启动网关（0.0.0.0）
 //   node gateway.js adduser <名字>            新建账号，打印初始密码
@@ -25,7 +25,7 @@ import { createRequire } from 'node:module';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const { WebSocketServer } = createRequire(import.meta.url)(path.resolve(HERE, '..', 'node_modules', 'ws'));
 const WSS = new WebSocketServer({ noServer: true, maxPayload: 8 << 20 });
-const DATA = process.env.GW_DATA || path.join(os.homedir(), 'cfdriver-gw');
+const DATA = process.env.GW_DATA || path.join(os.homedir(), 'nullflux-gw');
 const APP_SRC = process.env.GW_APP_SRC || path.resolve(HERE, '..');
 const CPUS = process.env.GW_CPUS || '';                     // 例如 88-95；空 = 不绑核
 const FOAM_BASH = process.env.GW_FOAM_BASH || '';
@@ -193,7 +193,7 @@ function unixGet(sock, p, timeout = 3000) {
 function bwrapArgs(name, home, argv) {
   const ro = (a, b = a) => ['--ro-bind', a, b];
   return [
-    '--unshare-all', '--die-with-parent', '--new-session', '--hostname', 'cfdriver',
+    '--unshare-all', '--die-with-parent', '--new-session', '--hostname', 'nullflux',
     ...ro('/usr'), '--symlink', 'usr/lib', '/lib', '--symlink', 'usr/lib64', '/lib64', '--symlink', 'usr/bin', '/bin', '--symlink', 'usr/sbin', '/sbin',
     ...ro('/etc'), '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp', '--tmpfs', '/dev/shm', '--dir', '/var', '--tmpfs', '/var/tmp',
     ...EXTRA_RO.flatMap(p => ro(p)),
@@ -258,7 +258,7 @@ h1{font-size:22px;margin:0}p{margin:0;color:#6b6b70;font-size:14px;line-height:1
 input{height:42px;padding:0 12px;border:1px solid #ddd;border-radius:10px;font-size:16px}button{height:44px;border:0;border-radius:10px;background:#111;color:#fff;font-size:16px;font-weight:600;cursor:pointer}
 .err{color:#dc2626}.spin{width:28px;height:28px;border:3px solid #ddd;border-top-color:#111;border-radius:50%;animation:s 1s linear infinite}@keyframes s{to{transform:rotate(360deg)}}</style></head><body>${body}</body></html>`;
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const loginPage = (err = '', name = '') => page('CFDriver · 登录', `<form class="card" method="post" action="/gw/login"><h1>CFDriver</h1><p>面向反应器的 CFD 智能体。账号由管理员分配。</p>
+const loginPage = (err = '', name = '') => page('NullFlux · 登录', `<form class="card" method="post" action="/gw/login"><h1>NullFlux</h1><p>面向反应器的 CFD 智能体。账号由管理员分配。</p>
 ${err ? `<p class="err">${esc(err)}</p>` : ''}<label>账号<input name="u" value="${esc(name)}" autocomplete="username" required autofocus></label>
 <label>密码<input name="p" type="password" autocomplete="current-password" required></label><button>登录</button></form>`);
 const startingPage = () => page('正在准备工作区', `<div class="card" style="align-items:center;text-align:center"><div class="spin"></div><h1>正在准备你的工作区</h1><p>首次打开约需十几秒，页面会自动刷新。</p></div><script>setTimeout(()=>location.reload(),2500)</script>`);
@@ -293,7 +293,7 @@ async function onRequest(req, res) {
   if (url.pathname === '/gw/relay.mjs') {
     const host = req.headers.host || '';
     const src = fs.readFileSync(path.join(HERE, 'relay_client.mjs'), 'utf8').replace('__GW_URL__', `ws://${host}/gw/relay`).replace('__GW_TOKEN__', relayToken(user));
-    res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Content-Disposition': 'attachment; filename="cfdriver-net-helper.mjs"', 'Cache-Control': 'no-store' }).end(src); return;
+    res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Content-Disposition': 'attachment; filename="nullflux-net-helper.mjs"', 'Cache-Control': 'no-store' }).end(src); return;
   }
   let inst;
   try { inst = await ensure(user); } catch (e) { res.writeHead(503, { 'Content-Type': 'text/plain; charset=utf-8' }).end(e.message); return; }
@@ -337,7 +337,7 @@ if (cmd === 'serve') {
   const port = +(process.argv[process.argv.indexOf('--port') + 1]) || 5310;
   const srv = http.createServer((q, s) => onRequest(q, s).catch(e => { try { s.writeHead(500).end(e.message); } catch {} }));
   srv.on('upgrade', (q, s, h) => onUpgrade(q, s, h).catch(() => s.destroy()));
-  srv.listen(port, '0.0.0.0', () => console.log(`[gw] CFDriver 多用户网关 :${port}  数据 ${DATA}  程序 ${APP_SRC}${CPUS ? '  绑核 ' + CPUS : ''}`));
+  srv.listen(port, '0.0.0.0', () => console.log(`[gw] NullFlux 多用户网关 :${port}  数据 ${DATA}  程序 ${APP_SRC}${CPUS ? '  绑核 ' + CPUS : ''}`));
   const bye = () => { for (const n of INST.keys()) stopInstance(n); setTimeout(() => process.exit(0), 1500); };
   process.on('SIGTERM', bye); process.on('SIGINT', bye);
 } else if (cmd === 'adduser' || cmd === 'passwd') {

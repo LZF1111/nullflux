@@ -1,4 +1,4 @@
-/* CFDriver 工作台增强（features.js）：对话框、选择器、右键菜单、拖入、上传、git、预览、CSV、消息操作、深色主题 */
+/* NullFlux 工作台增强（features.js）：对话框、选择器、右键菜单、拖入、上传、git、预览、CSV、消息操作、深色主题 */
 :root { --fx-c1: #2563eb; --fx-c2: #dc2626; --fx-c3: #16a34a; --fx-c4: #d97706; --fx-c5: #7c3aed; --fx-c6: #0891b2; }
 html[data-theme="dark"] { --fx-c1: #6ea8ff; --fx-c2: #f87171; --fx-c3: #4ade80; --fx-c4: #fbbf24; --fx-c5: #c084fc; --fx-c6: #22d3ee; }
 :root { --fx-font: 15px; --fx-shadow: 0 18px 48px rgba(0, 0, 0, .16), 0 2px 8px rgba(0, 0, 0, .06); --fx-accent: #2563eb; --fx-accent-bg: rgba(37, 99, 235, .09); }

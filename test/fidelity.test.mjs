@@ -14,7 +14,7 @@ let pass = 0;
 const t = async (name, fn) => { await fn(); pass++; console.log('PASS', name); };
 const mk = (rel, txt) => { const p = path.join(tmp, rel); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, txt); };
 
-const REPRO = '复现论文 Lu 2016 中试 DMTO 反应器（必须 3D 按原文）';
+const REPRO = '复现论文 Smith 2020 中试 FCC 反应器（必须 3D 按原文）';
 mk('case/constant/polyMesh/boundary', 'inlet { type patch; }\nback { type wedge; }\nfront { type wedge; }\n');
 mk('deviations.log.md', '# 偏离\n\n[DEV-001] 维度：原文 3D → 2D 轴对称 wedge\n  reason: 算力\n\n[DEV-003] 分布板：原文多孔板 → 本复现不建分布器，底部均匀进气\n\n[DEV-005] 恢复系数 e 取 0.9\n');
 
