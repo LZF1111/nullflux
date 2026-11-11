@@ -1,0 +1,41 @@
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    object      alphat.air;
+}
+
+dimensions      [1 -1 -1 0 0 0 0];
+
+internalField   uniform 0;
+
+boundaryField
+{
+    zone1_inlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    zone2_inlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    zone3_inlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    outlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    walls
+    {
+        type                compressible::alphatWallFunction;
+        Prt                 0.85;
+        value               $internalField;
+    }
+}

@@ -1,0 +1,41 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| OpenFOAM 场 U 模板 — 入口固定速度                                            |
+| 用法: 改 patch 名(inlet/outlet/walls/frontAndBack)与入口速度 (Ux Uy Uz)      |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volVectorField;
+    object      U;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+dimensions      [0 1 -1 0 0 0 0];
+
+internalField   uniform (0 0 0);
+
+boundaryField
+{
+    inlet
+    {
+        type            fixedValue;
+        value           uniform (1 0 0);      // 入口速度 m/s
+    }
+    outlet
+    {
+        type            inletOutlet;          // 防出口回流
+        inletValue      uniform (0 0 0);
+        value           uniform (0 0 0);
+    }
+    walls
+    {
+        type            noSlip;
+    }
+    frontAndBack
+    {
+        type            empty;                // 2D 算例
+    }
+}
+
+// ************************************************************************* //

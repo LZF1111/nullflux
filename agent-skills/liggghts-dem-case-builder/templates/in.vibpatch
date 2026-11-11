@@ -1,0 +1,59 @@
+# A-level periodic patch: settle then vibrate (tray frame: floor fixed, inertial force -m*a_tray)
+# usage: mpirun -np N lmp_auto -in in.patch -var f 60 -var Gz 2.5 -var Gh 0 -var phi 90 -var L 0.005 -var tvib 0.3
+atom_style granular
+atom_modify map array
+boundary p p f
+newton off
+communicate single vel yes
+units si
+processors * * 1
+region domain block 0 ${L} 0 ${L} -0.0002 0.025 units box
+create_box 1 domain
+neighbor 0.00003 bin
+neigh_modify delay 0
+fix m1 all property/global youngsModulus peratomtype 5e6
+fix m2 all property/global poissonsRatio peratomtype 0.3
+fix m3 all property/global coefficientRestitution peratomtypepair 1 0.7
+fix m4 all property/global coefficientFriction peratomtypepair 1 0.4
+fix m5 all property/global coefficientRollingFriction peratomtypepair 1 0.05
+pair_style gran model hertz tangential history rolling_friction cdt
+pair_coeff * *
+timestep 1e-6
+fix grav all gravity 9.81 vector 0 0 -1
+fix floor all wall/gran model hertz tangential history rolling_friction cdt primitive type 1 zplane 0.0
+# particles: 100 um mean, +-10 % uniform via 5 discrete sizes, 10000 kg/m3
+fix pts1 all particletemplate/sphere 15485863 atom_type 1 density constant 10000 radius constant 0.000045 volume_limit 1e-16
+fix pts2 all particletemplate/sphere 15485867 atom_type 1 density constant 10000 radius constant 0.0000475 volume_limit 1e-16
+fix pts3 all particletemplate/sphere 32452843 atom_type 1 density constant 10000 radius constant 0.00005 volume_limit 1e-16
+fix pts4 all particletemplate/sphere 32452867 atom_type 1 density constant 10000 radius constant 0.0000525 volume_limit 1e-16
+fix pts5 all particletemplate/sphere 49979687 atom_type 1 density constant 10000 radius constant 0.000055 volume_limit 1e-16
+fix pdd all particledistribution/discrete/numberbased 86028121 5 pts1 0.2 pts2 0.2 pts3 0.2 pts4 0.2 pts5 0.2
+region ins block 0 ${L} 0 ${L} 0.0002 0.004 units box
+variable mtot equal 2.8294*${L}*${L}
+fix ins all insert/pack seed 67867967 distributiontemplate pdd maxattempt 200 insert_every once overlapcheck yes all_in yes region ins mass_in_region ${mtot}
+fix integr all nve/sphere
+compute zmax all reduce max z
+compute vzr all reduce ave vz
+thermo_style custom step time atoms ke c_zmax cpu
+thermo 5000
+thermo_modify lost error norm no
+run 1
+unfix ins
+run 50000
+write_restart settled.restart
+# vibration in tray frame
+variable om equal 2*PI*${f}
+variable Az equal ${Gz}*9.81/(v_om*v_om)
+variable Ah equal ${Gh}*9.81/(v_om*v_om)
+variable ph equal ${phi}*PI/180
+variable t0 equal time
+variable t0f equal ${t0}
+variable az equal -v_Az*v_om*v_om*sin(v_om*(time-v_t0f))
+variable ax equal -v_Ah*v_om*v_om*sin(v_om*(time-v_t0f)-v_ph)
+variable fx atom -mass*v_ax
+variable fz atom -mass*v_az
+fix shake all addforce v_fx 0 v_fz
+dump d1 all custom 500 post/dump*.liggghts id x y z vx vy vz omegax omegay omegaz radius
+dump_modify d1 pad 8
+variable nvib equal round(${tvib}/1e-6)
+run ${nvib}

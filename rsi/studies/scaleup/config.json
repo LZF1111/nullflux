@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "purpose": "Scale-up design RSI for the commercial DMTO reactor of Lu et al. 2017 (CES 171:244): at the paper's methanol throughput (241 t/h) and fresh-catalyst rate, choose main-zone diameter and height, bed temperature, catalyst inventory and steam ratio to maximise the light-olefin yield Y = S(C2H4+C3H6) x eta_MeOH. Screening uses the 2D wedge model (outlet KPIs of the 2D commercial case matched the paper CFD within 0.1 %); the final candidate is checked in 3D by hand. Model-based design study, not a plant recommendation: the kinetics over-predict C2H4/C3H6 at this scale (paper CFD 1.57 vs plant 1.01).",
+  "base": {"scale": "commercial", "D_m": 10.5, "H_m": 8.0, "T_K": 748.0, "inv_t": 56.0, "steam_ratio": 0.25,
+           "meoh_kg_h": 241000.0, "gs_kg_h": 42000.0, "p_gauge_MPa": 0.108, "wc_in": 0.0},
+  "bounds": {"D_m": [8.5, 12.5], "H_m": [6.0, 10.0], "T_K": [723.0, 748.0], "inv_t": [40.0, 72.0], "steam_ratio": [0.15, 0.35]},
+  "bounds_note": "T limited to the arr2 interpolation range of the paper's kinetics table (723-748 K); no extrapolation",
+  "constraints": {
+    "Ug_prod_m_s": [1.08, 1.62],
+    "Ug_note": "the commercial EMMS heterogeneity fit (Table A4) was generated at Ug = 1.35 m/s; keep within +-20 % so the drag closure stays near its design point",
+    "bed_fill_max": 0.45,
+    "bed_fill_note": "packed bed height (alpha_s 0.55) / main-zone height; above this the expanded turbulent bed reaches the cone",
+    "whsv_max_h": 6.0
+  },
+  "cells": {"D_edges": [9.8, 11.2], "T_edges": [731.0, 740.0]},
+  "thresholds": {
+    "eta_min_pct": 97.0,
+    "fit_consistent_max": 1.0,
+    "sample_min_full": 200,
+    "sample_min_short": 80,
+    "coverage_min": 0.9,
+    "inv_ratio_min": 0.97,
+    "inv_ratio_max": 1.03,
+    "control_kpi_tol_pct": 1.0,
+    "accept_min_gain": 0.15,
+    "accept_kappa": 2.0,
+    "screen_margin": 0.4,
+    "screen_kappa": 2.0
+  },
+  "control_reference": {"source": "cases/comm2D (paper commercial conditions, 2D, 150 s, window 90-150 s)",
+                        "C2H4_C3H6": 1.566, "S_C2C3_pct": 84.82, "eta_MeOH_pct": 98.718},
+  "run": {
+    "full": {"duration_s": 60.0, "avg_from_s": 30.0},
+    "short": {"duration_s": 30.0, "avg_from_s": 15.0},
+    "max_dt": "5e-4",
+    "np": 8,
+    "reserve_cores": 8,
+    "work_root": "/home/user/mto_repro/rsi_scale",
+    "cfd_trial": "/home/user/nullflux-test/cfd_trial.js",
+    "foam_bashrc": "/home/user/OpenFOAM/OpenFOAM-v2306/etc/bashrc",
+    "template_case": "/home/user/mto_repro/cases/pilot2D",
+    "cstr_dir": "/home/user/mto_repro/cstr",
+    "timeouts_ms": {"generate": 600000, "mesh": 1800000, "solve": 259200000, "verify": 600000}
+  }
+}

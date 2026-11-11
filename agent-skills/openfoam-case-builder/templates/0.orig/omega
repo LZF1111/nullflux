@@ -1,0 +1,43 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| OpenFOAM 场 omega 模板 — 比耗散率 (1/s)                                      |
+| 入口值 omega = k^0.5 / (Cmu^0.25 * L), Cmu=0.09, L~=0.07*水力直径            |
+| 例: k=0.00375, L=0.014 -> omega = 0.0612/(0.548*0.014) ~= 7.98              |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    object      omega;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+dimensions      [0 0 -1 0 0 0 0];
+
+internalField   uniform 8;
+
+boundaryField
+{
+    inlet
+    {
+        type            fixedValue;
+        value           uniform 8;
+    }
+    outlet
+    {
+        type            inletOutlet;
+        inletValue      uniform 8;
+        value           uniform 8;
+    }
+    walls
+    {
+        type            omegaWallFunction;
+        value           uniform 8;
+    }
+    frontAndBack
+    {
+        type            empty;
+    }
+}
+
+// ************************************************************************* //

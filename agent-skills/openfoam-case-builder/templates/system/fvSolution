@@ -1,0 +1,55 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| OpenFOAM fvSolution 模板 — 稳态 SIMPLEC                                      |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      fvSolution;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+solvers
+{
+    p
+    {
+        solver          GAMG;
+        smoother        GaussSeidel;
+        tolerance       1e-06;
+        relTol          0.1;
+    }
+
+    "(U|k|omega|epsilon|nuTilda)"
+    {
+        solver          smoothSolver;
+        smoother        symGaussSeidel;
+        tolerance       1e-08;
+        relTol          0.1;
+    }
+}
+
+SIMPLE
+{
+    consistent          yes;      // SIMPLEC，收敛更快；yes 时 p 松弛可设 1
+    nNonOrthogonalCorrectors 1;
+
+    residualControl
+    {
+        p               1e-4;
+        U               1e-4;
+        "(k|omega|epsilon)" 1e-4;
+    }
+}
+
+relaxationFactors
+{
+    equations
+    {
+        U               0.9;      // consistent yes 时可较大；发散就调小到 0.5
+        ".*"            0.9;
+    }
+    // fields { p 0.7; }          // consistent no 时才需松弛 p
+}
+
+// ************************************************************************* //

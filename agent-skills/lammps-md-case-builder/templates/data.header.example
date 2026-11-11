@@ -1,0 +1,42 @@
+# data.system 文件头结构示例（LAMMPS read_data 格式）
+# 说明:
+#  - 第 1 行是注释行(自由文本), read_data 会忽略, 但不能删。
+#  - 段名(Masses/Atoms/Bonds...)后必须空一行再列数据。
+#  - Atoms 段每行列数由 atom_style 决定:
+#      atomic  : id type x y z
+#      charge  : id type q x y z          <- ReaxFF/库仑体系
+#      full    : id molid type q x y z    <- CHARMM/OPLS 有机分子
+#  - atom_style atomic|charge 时不要有 Bonds/Angles 段;
+#    atom_style full|molecular|bond 才需要 Bonds 及其 type 计数。
+
+LAMMPS data file - example header
+
+     8  atoms
+     2  atom types
+
+   0.0   10.0   xlo xhi
+   0.0   10.0   ylo yhi
+   0.0   10.0   zlo zhi
+# 非正交盒子再加一行:  xy xz yz  三斜倾斜量
+
+Masses
+
+   1   12.011      # C
+   2    1.008      # H
+
+# ---- atom_style charge 示例 (id type q x y z) ----
+Atoms
+
+   1   1   -0.15   1.00   1.00   1.00
+   2   2    0.05   1.09   1.00   1.00
+   3   2    0.05   0.64   1.03   1.00
+   4   2    0.05   0.64   0.51   0.87
+   5   1   -0.15   3.00   3.00   3.00
+   6   2    0.05   3.09   3.00   3.00
+   7   2    0.05   2.64   3.03   3.00
+   8   2    0.05   2.64   2.51   2.87
+
+# ---- 若 atom_style full 且有键, 追加(并在头部写 "N bonds" / "M bond types") ----
+# Bonds
+#
+#    1   1   1   2      # bond-id  bond-type  atom-i  atom-j

@@ -1,0 +1,22 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| OpenFOAM turbulenceProperties 模板 — RANS k-omega SST                        |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      turbulenceProperties;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+simulationType  RAS;          // RAS / LES / laminar
+
+RAS
+{
+    RASModel        kOmegaSST;    // kEpsilon / realizableKE / SpalartAllmaras
+    turbulence      on;
+    printCoeffs     on;
+}
+
+// ************************************************************************* //

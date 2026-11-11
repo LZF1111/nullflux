@@ -1,0 +1,42 @@
+# in.metal_eam — metal 单位金属骨架（EAM，NPT 定密度）
+# 运行: lmp -in in.metal_eam
+# 势文件 Cu_mishin1.eam.alloy 需放在 case 目录或 LAMMPS potentials/ 下
+
+# ---------- 1) 初始化 ----------
+units           metal
+dimension       3
+boundary        p p p
+atom_style      atomic
+
+# ---------- 2) 建 FCC 铜 (a=3.615 Å) ----------
+lattice         fcc 3.615
+region          box block 0 8 0 8 0 8
+create_box      1 box
+create_atoms    1 box
+
+# ---------- 3) 力场 EAM ----------
+pair_style      eam/alloy
+pair_coeff      * * Cu_mishin1.eam.alloy Cu    # 元素映射列=atom type 顺序
+# mass 由 eam 势文件自带，不必再写
+
+# ---------- 4) 邻居表 ----------
+neighbor        2.0 bin
+neigh_modify    delay 10 every 1 check yes
+
+# ---------- 5) 最小化消重叠 ----------
+min_style       cg
+minimize        1.0e-4 1.0e-6 1000 10000
+reset_timestep  0
+
+# ---------- 6) 初速度 + NPT ----------
+velocity        all create 300.0 12345 mom yes rot yes dist gaussian
+timestep        0.001                          # 1 fs (metal 单位=ps)
+fix             1 all npt temp 300 300 0.1 iso 1.0 1.0 1.0   # Tdamp=0.1ps Pdamp=1.0ps
+
+# ---------- 7) 输出 ----------
+thermo          100
+thermo_style    custom step temp pe ke etotal press vol density lx
+
+# ---------- 8) 运行 ----------
+run             20000
+# write_data      data.final

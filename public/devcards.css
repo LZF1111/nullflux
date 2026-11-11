@@ -1,0 +1,81 @@
+/* 偏离审批卡片：输入框上方的托盘，每条待批偏离一张卡（配色全部取自 style.css / features.css 的设计令牌，明暗主题通用） */
+.dev-tray { flex-shrink: 0; display: flex; flex-direction: column; min-height: 0; margin: 0 max(16px, calc((100% - var(--thread-max) - 16px) / 2)) 8px; border: 1px solid var(--line2); border-radius: 14px; background: var(--bg1); overflow: hidden; }
+.dev-tray[hidden] { display: none; }
+.dev-tray[data-waiting="1"] { border-color: var(--warn); }
+
+.dev-pill { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 36px; padding: 6px 12px; border: 0; background: transparent; color: var(--text2); font: inherit; font-size: 13.5px; font-weight: 600; text-align: left; cursor: pointer; }
+.dev-pill:hover { background: var(--bg2); }
+.dev-pill:focus-visible { outline: 2px solid var(--fx-accent); outline-offset: -2px; }
+.dev-pill-dot { flex: 0 0 8px; width: 8px; height: 8px; border-radius: 50%; background: var(--line3); }
+.dev-tray[data-waiting="1"] .dev-pill-dot { background: var(--warn); }
+.dev-tray[data-waiting="1"] .dev-pill-text { color: var(--text); }
+.dev-pill-file { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); font: 500 12px var(--font-mono); direction: rtl; text-align: left; }
+.dev-pill-chev { flex-shrink: 0; color: var(--muted); font-size: 12.5px; font-weight: 500; }
+
+.dev-panel { min-height: 0; max-height: min(54vh, 580px); overflow-y: auto; padding: 4px 10px 10px; border-top: 1px solid var(--line); overscroll-behavior: contain; }
+.dev-panel[hidden] { display: none; }
+.dev-list { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+
+.dev-card { padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg2); }
+.dev-card[data-pick="approve"] { border-color: var(--ok); }
+.dev-card[data-pick="reject"] { border-color: var(--danger); }
+.dev-card[data-pick="modify"] { border-color: var(--warn); }
+.dev-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.dev-id { color: var(--text); font: 600 12.5px var(--font-mono); white-space: nowrap; }
+.dev-badge, .dev-major { padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line2); color: var(--text2); font-size: 12px; font-weight: 600; white-space: nowrap; }
+.dev-major { border-style: dashed; color: var(--muted); font-weight: 500; }
+:is(.dev-card, .dev-row)[data-status="pending"] .dev-badge { border-color: var(--warn); color: var(--warn); }
+:is(.dev-card, .dev-row)[data-status="approved"] .dev-badge { border-color: var(--ok); color: var(--ok); }
+:is(.dev-card, .dev-row)[data-status="rejected"] .dev-badge { border-color: var(--danger); color: var(--danger); }
+:is(.dev-card, .dev-row)[data-status="revise"] .dev-badge { border-color: var(--warn); color: var(--warn); }
+.dev-title { margin-top: 6px; color: var(--text); font-size: 15px; font-weight: 650; line-height: 1.5; overflow-wrap: anywhere; }
+.dev-detail { margin-top: 6px; color: var(--text2); font-size: 13.5px; font-weight: 500; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+.dev-warn { margin-top: 8px; padding: 6px 10px; border: 1px solid var(--warn); border-radius: 8px; color: var(--text); font-size: 13px; font-weight: 550; line-height: 1.5; }
+.dev-usernote { margin-top: 6px; color: var(--muted); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+
+.dev-ev { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; margin-top: 10px; }
+.dev-thumb { padding: 0; border: 1px solid var(--line2); border-radius: 8px; background: #fff; overflow: hidden; cursor: zoom-in; line-height: 0; }
+.dev-thumb img { display: block; height: 104px; width: auto; min-width: 60px; max-width: 260px; object-fit: contain; background: #fff; }
+.dev-thumb:hover, .dev-thumb:focus-visible { border-color: var(--fx-accent); outline: none; }
+.dev-ev-cap { flex-basis: 100%; color: var(--faint); font-size: 12px; }
+
+.dev-acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.dev-act { min-height: 34px; padding: 0 16px; border: 1px solid var(--line2); border-radius: 10px; background: var(--bg1); color: var(--text); font: inherit; font-size: 14px; font-weight: 650; cursor: pointer; }
+.dev-act:hover { border-color: var(--line3); }
+.dev-act:focus-visible, .dev-submit:focus-visible, .dev-link:focus-visible { outline: 2px solid var(--fx-accent); outline-offset: 2px; }
+.dev-act[aria-pressed="true"] { color: var(--bg1); }
+.dev-act[data-k="approve"][aria-pressed="true"] { background: var(--ok); border-color: var(--ok); }
+.dev-act[data-k="reject"][aria-pressed="true"] { background: var(--danger); border-color: var(--danger); }
+.dev-act[data-k="modify"][aria-pressed="true"] { background: var(--warn); border-color: var(--warn); }
+.dev-tray textarea { display: block; width: 100%; margin-top: 8px; padding: 8px 10px; border: 1px solid var(--line2); border-radius: 10px; background: var(--bg1); color: var(--text); font: inherit; font-size: 14px; font-weight: 500; line-height: 1.5; resize: vertical; }
+.dev-tray textarea:focus { outline: 2px solid var(--fx-accent); outline-offset: -1px; }
+.dev-tray textarea.bad { border-color: var(--danger); }
+.dev-tray textarea::placeholder { color: var(--faint); }
+
+.dev-rest { margin-top: 8px; }
+.dev-rest > summary { padding: 6px 4px; color: var(--muted); font-size: 13px; font-weight: 600; cursor: pointer; }
+.dev-row { border-top: 1px solid var(--line); }
+.dev-row > summary { display: flex; align-items: center; gap: 8px; padding: 7px 4px; cursor: pointer; list-style: none; }
+.dev-row > summary::-webkit-details-marker { display: none; }
+.dev-row > summary:hover { background: var(--bg2); }
+.dev-row-title { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text2); font-size: 13.5px; }
+.dev-row[open] .dev-row-title { white-space: normal; }
+.dev-row-body { padding: 0 4px 10px; }
+.dev-link { margin-top: 8px; padding: 0; border: 0; background: none; color: var(--fx-accent); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
+.dev-link:hover { text-decoration: underline; }
+
+.dev-foot { position: sticky; bottom: -10px; margin: 8px -10px -10px; padding: 0 10px 10px; border-top: 1px solid var(--line); background: var(--bg1); }
+.dev-foot-line { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; margin-top: 8px; }
+.dev-foot-hint { flex: 1 1 200px; color: var(--muted); font-size: 13px; }
+.dev-submit { min-height: 36px; padding: 0 18px; border: 1px solid var(--text); border-radius: 10px; background: var(--text); color: var(--bg1); font: inherit; font-size: 14px; font-weight: 650; cursor: pointer; }
+.dev-submit:disabled { border-color: var(--line2); background: var(--bg3); color: var(--faint); cursor: not-allowed; }
+
+@media (max-width: 640px) {
+  .dev-tray { margin-left: 10px; margin-right: 10px; }
+  .dev-pill-file { display: none; }
+  .dev-pill-text { flex: 1; }
+  .dev-act { flex: 1 1 auto; min-height: 40px; }
+  .dev-submit { flex: 1 1 100%; min-height: 40px; }
+  .dev-foot { position: static; }
+  .dev-panel { max-height: 50vh; }
+}

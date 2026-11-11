@@ -1,0 +1,69 @@
+#! MFiX-24.x project file — DEM 料斗/颗粒床骨架 (离散元)
+#! 官方参照: tutorials/dem/hopper, tutorials/dem/rotating_drum
+#! 颗粒可由 GENER_PART_CONFIG 自动生成, 或外部 particle_input.dat
+
+### Run controls
+  RUN_NAME  = 'DEM_HOPPER'
+  DESCRIPTION = 'DEM granular bed / hopper discharge'
+  UNITS     = 'SI'
+  RUN_TYPE  = 'NEW'
+  TIME      = 0.0
+  TSTOP     = 1.0
+  DT        = 1.0E-3
+  ENERGY_EQ = .FALSE.
+  SPECIES_EQ(0:1) = .FALSE. .FALSE.
+
+### Geometry (3D)
+  COORDINATES = 'CARTESIAN'
+  XLENGTH = 0.10   IMAX = 20
+  YLENGTH = 0.30   JMAX = 60
+  ZLENGTH = 0.10   KMAX = 20
+
+### Gas phase
+  RO_G0 = 1.2
+  MU_G0 = 1.8E-5
+
+### Solids: DEM
+  MMAX = 1
+  SOLIDS_MODEL(1) = 'DEM'
+  RO_S0(1) = 2500.0
+  D_P0(1)  = 2.0E-3
+
+### DEM collision parameters
+  DES_INTERP_ON = .TRUE.
+  DES_INTERP_SCHEME = 'LINEAR_HAT'
+  DES_COLL_MODEL = 'LSD'          ! linear spring-dashpot; 或 'HERTZIAN'
+  KN = 1000.0                     ! 法向刚度 N/m (按接触时间校核)
+  KT_FAC = 0.2857                 ! 切向/法向刚度比 (2/7)
+  DES_EN_INPUT(1) = 0.9           ! 颗粒-颗粒法向恢复系数
+  DES_EN_WALL_INPUT = 0.9         ! 颗粒-壁面
+  MEW = 0.3                       ! 颗粒间摩擦系数
+  MEW_W = 0.3                     ! 颗粒-壁面摩擦
+
+### Auto-generate initial particles from IC region
+  GENER_PART_CONFIG = .TRUE.
+
+### Numerics
+  MAX_NIT = 50
+  TOL_RESID = 1.0E-3
+
+### Boundary conditions
+  BC_TYPE(1) = 'PO'               ! top pressure outlet
+  BC_X_W(1)=0.0 BC_X_E(1)=0.10 BC_Y_S(1)=0.30 BC_Y_N(1)=0.30 BC_Z_B(1)=0.0 BC_Z_T(1)=0.10
+  BC_P_G(1) = 101325.0
+# 底部/侧壁默认无滑移壁; 复杂料斗几何用 cut-cell (CARTESIAN_GRID + STL)
+
+### Initial condition: packed particle region
+  IC_X_W(1)=0.0 IC_X_E(1)=0.10 IC_Y_S(1)=0.0 IC_Y_N(1)=0.15 IC_Z_B(1)=0.0 IC_Z_T(1)=0.10
+  IC_EP_G(1) = 0.42
+  IC_U_G(1)=0.0 IC_V_G(1)=0.0 IC_W_G(1)=0.0
+  IC_U_S(1,1)=0.0 IC_V_S(1,1)=0.0 IC_W_S(1,1)=0.0
+# freeboard
+  IC_X_W(2)=0.0 IC_X_E(2)=0.10 IC_Y_S(2)=0.15 IC_Y_N(2)=0.30 IC_Z_B(2)=0.0 IC_Z_T(2)=0.10
+  IC_EP_G(2) = 1.0
+
+### Output
+  RES_DT = 0.01
+  WRITE_VTK_FILES = .TRUE.
+  VTK_DT = 0.02
+  VTK_VAR = 1 2 3

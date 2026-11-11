@@ -1,0 +1,42 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| OpenFOAM 场 k 模板 — 湍动能 (m^2/s^2)                                        |
+| 入口值 k = 1.5*(I*U)^2 ; 例: I=5%, U=1 -> k=1.5*(0.05)^2 = 0.00375           |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    object      k;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+dimensions      [0 2 -2 0 0 0 0];
+
+internalField   uniform 0.00375;
+
+boundaryField
+{
+    inlet
+    {
+        type            fixedValue;
+        value           uniform 0.00375;
+    }
+    outlet
+    {
+        type            inletOutlet;
+        inletValue      uniform 0.00375;
+        value           uniform 0.00375;
+    }
+    walls
+    {
+        type            kqRWallFunction;      // 高 Re 壁面函数
+        value           uniform 0.00375;
+    }
+    frontAndBack
+    {
+        type            empty;
+    }
+}
+
+// ************************************************************************* //

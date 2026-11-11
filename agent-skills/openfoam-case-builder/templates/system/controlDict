@@ -1,0 +1,40 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| OpenFOAM controlDict 模板 — 不可压稳态 (simpleFoam)                          |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      controlDict;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+application     simpleFoam;
+
+startFrom       startTime;
+startTime       0;
+stopAt          endTime;
+endTime         1000;          // 稳态：迭代步数
+deltaT          1;
+writeControl    timeStep;
+writeInterval   100;
+purgeWrite      0;
+writeFormat     ascii;
+writePrecision  8;
+writeCompression off;
+timeFormat      general;
+timePrecision   6;
+runTimeModifiable true;
+
+// 若需自定义库（自编模型），在此链入：
+// libs ("libMyModels.so");
+
+// 后处理（可选）：残差与力系数
+functions
+{
+    #includeFunc residuals
+    // #includeFunc forceCoeffs
+}
+
+// ************************************************************************* //

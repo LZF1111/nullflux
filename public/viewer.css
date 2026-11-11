@@ -1,0 +1,34 @@
+/* G-36 查看器增强（对标 OpenChamber）：预览标签、图片缩放平移、视频、保存状态、对话里的文件链接与内联图片 */
+.tab.preview .name { font-style: italic; }
+.save-status { margin-right: 8px; color: var(--muted); font-size: 12px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.save-status[data-tone="warn"] { color: var(--warn, #b26b00); }
+.save-status:empty { display: none; }
+
+.img-host.zoomable .img-wrap { display: block; position: relative; overflow: hidden; padding: 0; touch-action: none; }
+.img-host.zoomable .img-wrap.pannable { cursor: grab; }
+.img-host.zoomable .img-wrap.dragging { cursor: grabbing; }
+.img-host.zoomable img { position: absolute; left: 0; top: 0; max-width: none; max-height: none; transform-origin: 0 0; cursor: inherit; opacity: 0; user-select: none; -webkit-user-drag: none; border-radius: 0; }
+.img-host.zoomable img.ready { opacity: 1; }
+.viewer-toolbar.static.img-meta { flex-wrap: wrap; row-gap: 6px; }
+.img-meta .viewer-title { flex: 1 1 120px; max-width: none; }
+.img-meta .gal-count, .img-meta .img-dims { flex: 0 0 auto; white-space: nowrap; }
+.img-meta > span[style*="flex"] { display: none; }
+.img-meta .mini { flex: 0 0 auto; white-space: nowrap; }
+.zoom-ctl { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 4px; margin-right: 6px; }
+.zoom-ctl .zoom-pct { min-width: 52px; font-variant-numeric: tabular-nums; }
+.img-wrap.video-wrap video { max-width: 100%; max-height: 100%; background: #000; border-radius: 4px; }
+
+.msg.assistant .bubble a.file-link, a.file-link { color: inherit; text-decoration: underline; text-decoration-color: color-mix(in srgb, currentColor 35%, transparent); text-underline-offset: 3px; cursor: pointer; }
+.msg.assistant .bubble a.file-link:hover, .msg.assistant .bubble a.file-link:focus-visible, a.file-link:hover, a.file-link:focus-visible { color: var(--fx-accent); text-decoration-color: currentColor; }
+a.file-link code { color: inherit; }
+.msg-images { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.msg-img { padding: 0; border: 1px solid var(--line2); border-radius: 8px; background: var(--bg2); overflow: hidden; cursor: zoom-in; line-height: 0; }
+.msg .bubble .msg-img img { display: block; height: 132px; min-width: 60px; width: auto; max-width: 280px; margin: 0; border-radius: 0; object-fit: contain; background: #fff; }
+.msg-img:hover, .msg-img:focus-visible { border-color: var(--fx-accent); }
+
+.cfd-lightbox { position: fixed; inset: 0; z-index: 1200; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, .82); outline: none; }
+.cfd-lightbox > img { max-width: calc(100vw - 120px); max-height: calc(100vh - 110px); object-fit: contain; background: #fff; border-radius: 4px; box-shadow: 0 10px 40px rgba(0, 0, 0, .5); }
+.cfd-lightbox .lb-bar { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center; gap: 10px; padding: 10px 14px; color: #f4f4f5; font-size: 13px; }
+.cfd-lightbox .lb-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: monospace; }
+.cfd-lightbox .lb-count { color: #a1a1aa; font-variant-numeric: tabular-nums; }
+.cfd-lightbox .lb-grow { flex: 1; }

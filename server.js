@@ -1,4 +1,4 @@
-﻿import 'dotenv/config';
+import 'dotenv/config';
 import express from 'express';
 import { WebSocketServer } from 'ws';
 import http from 'http';
@@ -9,7 +9,54 @@ import { fileURLToPath } from 'url';
 import { spawn, spawnSync } from 'child_process';
 import crypto from 'crypto';
 import os from 'os';
+import { EventEmitter } from 'events';
 import * as SkillLib from './skills.js';
+import * as FoamPost from './foam_postproc.js';
+import * as Fidelity from './fidelity.js';
+import * as Evolve from './evolve.js';
+import { RecoveryManager, repairDanglingToolCalls, isTransientLLMError } from './agent_recovery.js';
+import { applyEdit, classifyLlmHttp, parseRetryAfter, llmRetryDelay, isNetworkError, isTimeoutError, clipToolOutput, sweepToolOutput } from './agent_core.js';
+import { resolveMentioned } from './path_resolve.js';
+import { setMaxListeners } from 'node:events';
+// 抑制 AbortSignal 上限监听器警告（每个 callLLM 会给 abort signal 加 listener）
+setMaxListeners(0);
+import { createTaskTransport, taskOwner, syncTaskObservers } from './task_transport.js';
+
+// A1: 显式任务状态枚举（统一语义；现有散落字段仍保留，向下兼容）
+const TASK_STATE = Object.freeze({
+  IDLE:          'idle',
+  RUNNING:       'running',
+  AWAITING_USER: 'awaiting_user',
+  PAUSED:        'paused',
+  COMPLETE:      'complete',
+  STOPPED:       'stopped',
+  ERROR:         'error',
+  STALLED:       'stalled',
+});
+/** 从 session 散落字段派生当前状态（单一真源，向下兼容） */
+function getTaskState(session) {
+  if (!session) return TASK_STATE.IDLE;
+  if (session._running)                                    return TASK_STATE.RUNNING;
+  if (session.aborted)                                     return TASK_STATE.STOPPED;
+  if (session.taskComplete)                                return TASK_STATE.COMPLETE;
+  if (session._endReasonDetail === 'llm_circuit')          return TASK_STATE.ERROR;
+  if (session.awaitingUserChoice || session.pendingQuestion) return TASK_STATE.AWAITING_USER;
+  if (session._budgetExhausted)                            return TASK_STATE.PAUSED;
+  if (session._endReasonDetail === 'stalled')              return TASK_STATE.STALLED;
+  return TASK_STATE.IDLE;
+}
+import { apiDefaults, resolveChatConfig, validateApiUpdate, settingsForRef, validateProvider } from './api_config.js';
+import * as AccessAuth from './access_auth.js';
+import * as Notify from './notify.js';
+import * as ExtRuns from './external_runs.js';
+import * as Monitor from './monitor.js';
+import * as Prelaunch from './foam_prelaunch.js';
+import * as Cap from './capabilities.js';
+// 多用户网关里的实例没有直连网络：所有出网请求（模型 API、搜索、下载）走网关代理
+if (process.env.CFD_EGRESS_PROXY) {
+  try { const U = await import('undici'); U.setGlobalDispatcher(new U.EnvHttpProxyAgent()); }
+  catch (e) { console.warn('[egress] 代理未生效:', e.message); }
+}
 
 // 可选：HTTPS_PROXY / HTTP_PROXY 支持（GitHub 偶发 fetch failed 时可设置代理）
 try {
@@ -34,15 +81,15 @@ const SETTINGS_FILE = path.join(__dirname, 'settings.json');
 const IS_WIN = process.platform === 'win32';
 
 const DEFAULT_SETTINGS = {
-  apiKey: process.env.DEEPSEEK_API_KEY || '',
-  baseUrl: process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
-  model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
-  provider: 'sf',                  // 'sf' (SiliconFlow / 兼容 OpenAI) | 'copilot' (GitHub Copilot) | 'local' (本地 ollama/llama.cpp/vLLM/LM Studio, 免 key)
+  ...apiDefaults(process.env),
   copilotModel: 'gpt-4.1',         // 当 provider=copilot 时使用
   // 推理模型（Qwen3.6 / GLM-5.1 / DeepSeek-R1 等）的"思考预算"上限（top-level thinking_budget，单位 token）。
   // 这是治"模型一步想把所有事做完、长时间空转思考"的关键开关：把每一轮思考限定在合理长度，
   // 配合"小步快走"系统提示，既高效又不丢准确度。0 = 不限制；普通非推理模型会忽略此字段。
   thinkingBudget: 4096,
+  maxAutoSteps: 120,               // 单轮 agent 最大步数；长程依靠下面的自动续跑分段推进
+  autoResume: true,                // 后台求解作业结束时自动唤醒对应任务的 agent
+  autoResumeMax: 20,               // 无用户输入时最多连续自动唤醒次数
   paraviewExe: '',
   paraviewPython: '',
   openfoamBash: '',
@@ -59,15 +106,19 @@ const DEFAULT_SETTINGS = {
   customName: '',                           // 自定义工作流名称（如 "DEM 颗粒料仓"）
   customRoot: '',                           // 自定义工作流可选根目录（传给 agent 作为上下文）
   customPrompt: '',                         // 用户手写的流水式提示词（会拼到 system prompt）
-  // V4.1: 专用视觉模型路由 —— 主模型不是 VLM 也能读图
-  // 默认 SiliconFlow 的 Kimi VL；visionAnalyze 会优先走这个端点 + 这个模型，读完在把文字回传主模型。
-  visionProvider: 'sf',
-  visionBaseUrl: 'https://api.siliconflow.cn',
-  visionModel: 'Pro/moonshotai/Kimi-K2.6',  // 可在 ui 里改，如 Qwen/Qwen2.5-VL-72B-Instruct
-  visionApiKey: '',                          // 为空时复用主 apiKey
   workspace: process.env.WORKSPACE_DIR || process.cwd()
 };
 let SETTINGS = { ...DEFAULT_SETTINGS };
+// 外部通知（手机）：配置存 SETTINGS.notify；环境变量 CFD_NOTIFY_WEBHOOK 可直接启用
+const NOTIFIER = Notify.createNotifier({
+  getConfig: () => {
+    const c = SETTINGS.notify || {};
+    if (!c.webhook && process.env.CFD_NOTIFY_WEBHOOK) return { enabled: true, webhook: process.env.CFD_NOTIFY_WEBHOOK, kind: Notify.detectKind(process.env.CFD_NOTIFY_WEBHOOK), events: Notify.EVENT_KINDS, publicUrl: process.env.CFD_PUBLIC_URL || '' };
+    return c;
+  },
+});
+function notifyEvent(event) { NOTIFIER.send(event).catch(() => {}); }
+function _taskTitle(id) { try { return (id && TASKS.get(id)?.title) || ''; } catch { return ''; } }
 let WORKSPACE = path.resolve(DEFAULT_SETTINGS.workspace);
 
 async function loadSettings() {
@@ -85,6 +136,7 @@ function whichSync(name) {
   return '';
 }
 async function pathExistsSync(p) { try { await fs.access(p); return true; } catch { return false; } }
+let ENV_INFO = null;
 async function autoProbeEnvironment() {
   let changed = false;
   // ParaView
@@ -96,7 +148,17 @@ async function autoProbeEnvironment() {
     const cand = [whichSync('pvpython'), '/usr/bin/pvpython', '/usr/local/bin/pvpython', '/Applications/ParaView.app/Contents/bin/pvpython'].filter(Boolean);
     for (const c of cand) { if (await pathExistsSync(c)) { SETTINGS.paraviewPython = c; changed = true; break; } }
   }
-  // OpenFOAM root + bashrc：扫常见安装路径
+  // OpenFOAM：capabilities.detectEnv 统一探测（已 source 的环境、~/OpenFOAM/OpenFOAM-*、/opt、/usr/lib/openfoam、Windows 下走 WSL），
+  // 用户不需要再填路径；手填的路径失效了也用探测结果顶上
+  try {
+    ENV_INFO = await Cap.detectEnv();
+    const f = ENV_INFO.openfoam;
+    if (f.found && !IS_WIN) {
+      if (!SETTINGS.openfoamBash || !fssync.existsSync(SETTINGS.openfoamBash)) { SETTINGS.openfoamBash = f.bashrc; changed = true; }
+      if (f.root && (!SETTINGS.foamRoot || !fssync.existsSync(SETTINGS.foamRoot))) { SETTINGS.foamRoot = f.root; changed = true; }
+    }
+  } catch (e) { console.warn('[env] 探测失败:', e.message); }
+  // 兜底：老的 /opt 扫描
   if (!SETTINGS.foamRoot && !IS_WIN) {
     const candDirs = ['/usr/lib/openfoam', '/opt/openfoam', '/opt/OpenFOAM', '/opt'];
     const FOAM_RE = /^(?:openfoam|OpenFOAM[-_]?)[\w.-]*$/i;
@@ -157,20 +219,36 @@ function parseCliHost() {
 }
 const PORT = parseCliPort() || parseInt(process.env.PORT || '5174', 10);
 const IGNORE = new Set(['node_modules', '.git', '.next', 'dist', 'build', '__pycache__', '.venv', 'venv']);
-const MAX_AUTO_STEPS = 80;
+const MAX_AUTO_STEPS_DEFAULT = 120;
 
 // ====================== 内存防护（防 OOM） ======================
 // 单条工具返回最大字符数（超过则截断保存到上下文，但仍把原文回送给前端做显示）
 const MAX_TOOL_RESULT_CHARS = parseInt(process.env.MAX_TOOL_RESULT_CHARS || '20000', 10);
+const LLM_CONNECT_TIMEOUT_MS = parseInt(process.env.LLM_CONNECT_TIMEOUT_MS || '90000', 10);
 // 整段对话上下文软上限（字符）。超过则自动压缩（保留 system + 最近 6 条）
-const MAX_HISTORY_CHARS    = parseInt(process.env.MAX_HISTORY_CHARS    || '700000', 10);
-function clipForHistory(s) {
-  s = s == null ? '' : String(s);
-  if (s.length <= MAX_TOOL_RESULT_CHARS) return s;
-  const head = s.slice(0, Math.floor(MAX_TOOL_RESULT_CHARS * 0.7));
-  const tail = s.slice(-Math.floor(MAX_TOOL_RESULT_CHARS * 0.2));
-  return head + `\n...[已截断：原文 ${s.length} 字符，仅保留头尾，避免上下文越限]...\n` + tail;
+const MAX_HISTORY_CHARS    = parseInt(process.env.MAX_HISTORY_CHARS    || '300000', 10);
+// 命令输出累积器：保留开头 HEAD 与结尾 TAIL 字符，中间丢弃（报错通常在尾部；避免长命令无限增长）
+function headTailBuffer(HEAD = 12000, TAIL = 30000) {
+  let head = '', tail = '', dropped = 0;
+  return {
+    push(s) {
+      if (head.length < HEAD) { const k = Math.min(s.length, HEAD - head.length); head += s.slice(0, k); s = s.slice(k); }
+      if (!s) return;
+      tail += s;
+      if (tail.length > TAIL * 2) { dropped += tail.length - TAIL; tail = tail.slice(-TAIL); }
+    },
+    toString() {
+      if (tail.length > TAIL) { dropped += tail.length - TAIL; tail = tail.slice(-TAIL); }
+      return dropped ? `${head}\n…[中间省略 ${dropped} 字符]…\n${tail}` : head + tail;
+    },
+  };
 }
+// 超长的工具输出：模型拿头尾，全文存工作区 .nullflux/tool-output/（保留 7 天），截断提示里写明路径，模型可分段读回
+const TOOL_OUTPUT_DIR = () => path.join(WORKSPACE, '.nullflux', 'tool-output');
+function clipForHistory(s, name) {
+  return clipToolOutput(s, { max: MAX_TOOL_RESULT_CHARS, dir: TOOL_OUTPUT_DIR(), relBase: WORKSPACE, name: name || 'tool' });
+}
+setInterval(() => sweepToolOutput(TOOL_OUTPUT_DIR()), 6 * 3600_000).unref();
 function historyCharCount(messages) {
   let n = 0;
   for (const m of messages) {
@@ -181,9 +259,89 @@ function historyCharCount(messages) {
   }
   return n;
 }
-function autoCompactIfNeeded(session, ws) {
+// 旧工具输出裁剪（学 OpenCode 的 prune）：长任务里早先的 cat/sed 字典全文、日志尾巴后面基本用不上，
+// 却每一步都随上下文重发。最近 PRUNE_KEEP 条消息不动；更早的大块工具输出只留头尾。
+// 为了少破坏提示缓存，攒够 PRUNE_BATCH 字符才裁一次（一次裁一批）。PRUNE=0 关闭。
+const PRUNE_KEEP = 8, PRUNE_MIN = 1500, PRUNE_BATCH = Number(process.env.PRUNE_BATCH) || 6000;
+const PRUNE_MARK = '…[旧工具输出已裁剪';
+// 旧的工具调用参数（write_file 的整份内容、run_command 里的 heredoc 脚本）和工具输出一样每步重发，而内容早已落盘/执行过：
+// 较早的调用里超长的字符串参数只留头尾（仍是合法 JSON）。最近 PRUNE_ARGS_KEEP 条消息不动，保留完整范例。PRUNE_ARGS=0 关闭。
+const PRUNE_ARGS_KEEP = 24, PRUNE_ARG_MIN = 1200, PRUNE_ARG_MARK = '…[旧调用参数已裁剪';
+function _slimToolArgs(raw) {
+  if (typeof raw !== 'string' || raw.length <= PRUNE_ARG_MIN || raw.includes(PRUNE_ARG_MARK)) return '';
+  let obj;
+  try { obj = JSON.parse(raw); } catch (e) { return ''; }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return '';
+  let cut = false;
+  const walk = v => {
+    if (typeof v === 'string' && v.length > 700) { cut = true; return v.slice(0, 400) + `\n${PRUNE_ARG_MARK}：原 ${v.length} 字符，这是历史记录的缩略，不是当时的原文；需要原文就重新读文件]…\n` + v.slice(-150); }
+    if (Array.isArray(v)) return v.map(walk);
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]));
+    return v;
+  };
+  const out = JSON.stringify(walk(obj));
+  return cut && out.length < raw.length - 300 ? out : '';
+}
+function pruneOldToolResults(session) {
+  if (process.env.PRUNE === '0') return 0;
+  const ms = session.messages || [];
+  const end = ms.length - PRUNE_KEEP;
+  const cand = [];
+  let gain = 0;
+  for (let i = 1; i < end; i++) {
+    const m = ms[i];
+    if (m.role !== 'tool' || typeof m.content !== 'string' || m.content.length <= PRUNE_MIN || m.content.includes(PRUNE_MARK)) continue;
+    cand.push(i); gain += m.content.length - 1300;
+  }
+  const argCand = [];
+  if (process.env.PRUNE_ARGS !== '0') {
+    for (let i = 1; i < ms.length - PRUNE_ARGS_KEEP; i++) {
+      for (const tc of (ms[i].role === 'assistant' && ms[i].tool_calls) || []) {
+        const slim = _slimToolArgs(tc.function && tc.function.arguments);
+        if (slim) { argCand.push([i, tc.id, slim]); gain += tc.function.arguments.length - slim.length; }
+      }
+    }
+  }
+  if (gain < PRUNE_BATCH) return 0;
+  for (const i of cand) {
+    const c = ms[i].content;
+    ms[i] = { ...ms[i], content: c.slice(0, 800) + `\n${PRUNE_MARK}：原 ${c.length} 字符，只留头尾；需要细节就重新读文件/日志]…\n` + c.slice(-400) };
+  }
+  for (const [i, id, slim] of argCand) {
+    ms[i] = { ...ms[i], tool_calls: ms[i].tool_calls.map(tc => tc.id === id ? { ...tc, function: { ...tc.function, arguments: slim } } : tc) };
+  }
+  return gain;
+}
+// 非流式、无工具的一次性调用（用于压缩摘要）；失败返回 null，由调用方兜底
+async function llmOneShot(system, user, { maxTokens = 2000, signal, timeoutMs = 120_000 } = {}) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    let url, headers, model;
+    if (SETTINGS.provider === 'copilot') {
+      url = 'https://api.githubcopilot.com/chat/completions';
+      headers = copilotHeaders(await copilotRefreshApiToken());
+      model = SETTINGS.copilotModel || SETTINGS.model || 'gpt-4.1';
+    } else {
+      const config = resolveChatConfig(SETTINGS);
+      url = config.url;
+      headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.apiKey || 'local'}` };
+      model = config.model;
+    }
+    const body = { model, messages: [{ role: 'system', content: system }, { role: 'user', content: user }], temperature: 0.1, max_tokens: maxTokens, stream: false };
+    const resp = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: _combineSignals(signal, ctrl.signal) });
+    if (!resp.ok) return null;
+    const j = await resp.json();
+    const c = j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
+    return typeof c === 'string' && c.trim() ? c.trim() : null;
+  } catch { return null; } finally { clearTimeout(timer); }
+}
+
+const COMPACT_SYS = '你是长程 CFD 智能体的上下文压缩器。把给定的历史轨迹压成一份接续笔记，让另一个智能体只看笔记就能接着干。严格按以下小节输出（没有就写"无"）：\n## 目标与用户要求\n## 已完成（含关键数值、路径、runId）\n## 已验证的事实/结论\n## 失败与教训（试过什么、为什么失败，禁止重复）\n## 进行中的后台作业\n## 下一步\n规则：只写轨迹里出现过的事实，不要编造；保留精确的文件路径、参数值、报错关键字；中文；不超过 1800 字。';
+
+async function autoCompactIfNeeded(session, ws, signal, force = false) {
   const total = historyCharCount(session.messages);
-  if (total <= MAX_HISTORY_CHARS) return false;
+  if (!force && total <= MAX_HISTORY_CHARS) return false;
   const before = session.messages.length;
   if (before > 10) {
     const sys = session.messages[0];
@@ -205,7 +363,16 @@ function autoCompactIfNeeded(session, ws) {
       if (x.role === 'tool')      return `[工具返回] ${String(x.content || '').slice(0, 160)}`;
       return '';
     }).filter(Boolean).join('\n');
-    session.messages = [sys, { role: 'user', content: '以下是之前会话的压缩总结，请继续任务：\n' + summary }, ...cleanTail];
+    // 先让 LLM 写结构化接续笔记；输入用机械摘要（已各条截断）叠加上次笔记，控制在 ~120k 字内
+    const holder = session.task || session;
+    const prevNote = holder.compactNote ? `【上一版接续笔记】\n${holder.compactNote}\n\n` : '';
+    const digest = summary.length > 120_000 ? summary.slice(0, 40_000) + '\n…\n' + summary.slice(-80_000) : summary;
+    if (ws) try { ws.send(JSON.stringify({ type: 'agent_phase', phase: 'compacting', detail: '上下文超限 → LLM 生成接续笔记' })); } catch {}
+    const note = await llmOneShot(COMPACT_SYS, prevNote + '【待压缩轨迹】\n' + digest, { maxTokens: 2500, signal });
+    if (note) holder.compactNote = note;
+    const body = note ? `以下是之前会话的接续笔记（LLM 压缩），请据此继续任务：\n${note}` : '以下是之前会话的压缩总结，请继续任务：\n' + summary.slice(-60_000);
+    // 原地改写：同一任务的其他会话（多窗口/无人值守续跑）共享这个数组引用
+    session.messages.splice(0, session.messages.length, sys, { role: 'user', content: body }, ...cleanTail);
   }
   // 压缩后用最新工作记忆刷新 system，保证 pinned 事实（case 事实/已验证/当前阶段）不被压没
   try { session.messages[0] = { role: 'system', content: buildSystemPrompt(session) }; } catch {}
@@ -233,17 +400,20 @@ const TOOLS = [
   { type: 'function', function: { name: 'list_dir', description: '列出目录内容', parameters: { type: 'object', properties: { path: { type: 'string' } } } } },
   { type: 'function', function: { name: 'read_file', description: '读取文本文件。可传 start_line/end_line (1-indexed, 闭区间) 只读一部分。', parameters: { type: 'object', properties: { path: { type: 'string' }, start_line: { type: 'number' }, end_line: { type: 'number' } }, required: ['path'] } } },
   { type: 'function', function: { name: 'write_file', description: '写入/创建文件', parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } } },
-  { type: 'function', function: { name: 'edit_file', description: '在文件中精确替换字符串。old_str 必须唯一匹配。', parameters: { type: 'object', properties: { path: { type: 'string' }, old_str: { type: 'string' }, new_str: { type: 'string' } }, required: ['path', 'old_str', 'new_str'] } } },
-  { type: 'function', function: { name: 'multi_edit', description: '对同一个文件依次应用多个 edit_file 替换（原子：任一失败全部不写入）。快于多次调 edit_file。', parameters: { type: 'object', properties: { path: { type: 'string' }, edits: { type: 'array', items: { type: 'object', properties: { old_str: { type: 'string' }, new_str: { type: 'string' } }, required: ['old_str','new_str'] } } }, required: ['path','edits'] } } },
+  { type: 'function', function: { name: 'edit_file', description: '在文件中替换字符串。old_str 必须唯一匹配（行尾空白、弯引号差异自动容错；找不到时会返回文件里最接近的几行）。要替换全部出现处传 replace_all:true。', parameters: { type: 'object', properties: { path: { type: 'string' }, old_str: { type: 'string' }, new_str: { type: 'string' }, replace_all: { type: 'boolean' } }, required: ['path', 'old_str', 'new_str'] } } },
+  { type: 'function', function: { name: 'multi_edit', description: '对同一个文件依次应用多个 edit_file 替换（原子：任一失败全部不写入）。快于多次调 edit_file。', parameters: { type: 'object', properties: { path: { type: 'string' }, edits: { type: 'array', items: { type: 'object', properties: { old_str: { type: 'string' }, new_str: { type: 'string' }, replace_all: { type: 'boolean' } }, required: ['old_str','new_str'] } } }, required: ['path','edits'] } } },
   { type: 'function', function: { name: 'glob', description: '按通配符查找文件（支持 ** 、 *）。例：**/*.py 、 src/**/*.ts。', parameters: { type: 'object', properties: { pattern: { type: 'string' }, path: { type: 'string' } }, required: ['pattern'] } } },
   { type: 'function', function: { name: 'grep_search', description: '正则搜索代码（返回文件:行号: 内容）', parameters: { type: 'object', properties: { pattern: { type: 'string' }, path: { type: 'string' } }, required: ['pattern'] } } },
-  { type: 'function', function: { name: 'run_command', description: '执行 shell 命令（用户审批）。命令中的 python/python3/pip/jupyter 会被自动替换为用户在顶部选中的解释器。', parameters: { type: 'object', properties: { command: { type: 'string' }, timeout_ms: { type: 'number' } }, required: ['command'] } } },
+  { type: 'function', function: { name: 'run_command', description: '执行 shell 命令（用户审批）。命令中的 python/python3/pip/jupyter 会被自动替换为用户在顶部选中的解释器。', parameters: { type: 'object', properties: { command: { type: 'string' }, timeout_ms: { type: 'number', description: '超时毫秒，默认 120000；到时命令及其子进程会被终止' } }, required: ['command'] } } },
   { type: 'function', function: { name: 'update_todos', description: '维护待办清单', parameters: { type: 'object', properties: { items: { type: 'array', items: { type: 'object', properties: { text: { type: 'string' }, done: { type: 'boolean' } }, required: ['text'] } } }, required: ['items'] } } },
   { type: 'function', function: { name: 'task_complete', description: '声明任务完成', parameters: { type: 'object', properties: { summary: { type: 'string' } }, required: ['summary'] } } },
   { type: 'function', function: { name: 'web_search', description: '联网搜索。自动按优先级选用 Tavily(若 TAVILY_API_KEY) → Serper(SERPER_API_KEY) → Brave(BRAVE_API_KEY) → SearXNG(SEARXNG_URL) → DuckDuckGo HTML → Bing → Baidu。Tavily 会附带 LLM 摘要 answer。可指定 topic=news/general、time_range=day|week|month|year。', parameters: { type: 'object', properties: { query: { type: 'string' }, top_k: { type: 'number' }, topic: { type: 'string', enum: ['general','news'] }, time_range: { type: 'string', enum: ['day','week','month','year'] }, include_answer: { type: 'boolean', description: '默认 true（仅 Tavily 生效）' } }, required: ['query'] } } },
   { type: 'function', function: { name: 'paper_search', description: '【学术】文献检索（合并 Semantic Scholar + arXiv，去重按 DOI/标题；无需 API Key）。返回 title / authors / year / venue / citationCount / abstract / DOI / openAccessPdf 链接，按引用数与年份综合排序。比 web_search 更适合找算法原文。', parameters: { type: 'object', properties: { query: { type: 'string' }, top_k: { type: 'number' }, year: { type: 'string', description: '如 2020-2025 / 2023- / -2018' }, open_access_only: { type: 'boolean' }, fields_of_study: { type: 'string', description: 'Semantic Scholar 字段过滤，如 Physics,Engineering,Computer Science（逗号分隔）' } }, required: ['query'] } } },
   { type: 'function', function: { name: 'paper_fetch', description: '【学术】按 ID 取论文详情（abstract + tldr + references 列表 + OA PDF 链接）。id 可为 DOI:10.x/x、ARXIV:2106.15928、Semantic Scholar paperId（40 位 hex），或裸 arXiv id。可选 download=true 把 OA PDF 下载到 downloads/papers/ 便于后续 read_paper。', parameters: { type: 'object', properties: { id: { type: 'string' }, download: { type: 'boolean' }, max_refs: { type: 'number' } }, required: ['id'] } } },
   { type: 'function', function: { name: 'read_paper', description: '【学术】比 read_document 更强：先 read_document 拿全文，再做章节切分与关键信息抽取——Abstract / Introduction / Methods / Equations / Results / Conclusion / References。返回结构化 Markdown。可选 focus 定位特定章节段落。', parameters: { type: 'object', properties: { path: { type: 'string' }, focus: { type: 'string' } }, required: ['path'] } } },
+  { type: 'function', function: { name: 'post_view', description: '后处理出图（用户说"给我看 z=0.5 m 截面的乙烯云图""把颗粒浓度剖开看""画速度流线"时直接调用）。在右侧「可视化」里打开对应三维视图，并返回每层的数值统计；slice 层另存一张出版级 PNG 供 vision_analyze 检查。layers 每项：type=slice|clip|iso|threshold|stream|glyph|volume|surface|outline；field 场名（如 C2H4.gas、alpha.particles、U.gas）；comp=mag|x|y|z；axis=x|y|z（截面法向）与 position（米，沿 axis 的坐标；不给就取中间）；iso 用 values=[...]；threshold 用 lo/hi；stream 用 vector 与 p1/p2 种子线（不给自动取底部横线）；可选 cmap、lo/hi 色标范围、log、contours（截面等值线条数）、opacity。先不知道有哪些场时 layers 可省略，返回会列出场名和范围。', parameters: { type: 'object', properties: { case: { type: 'string', description: '算例目录（工作区内）' }, time: { type: 'string', description: '时刻，默认最新' }, mode: { type: 'string', enum: ['post', 'mesh'], description: 'mesh=网格与几何视图' }, layers: { type: 'array', items: { type: 'object' } }, show: { type: 'boolean', description: '是否在界面打开，默认 true' } }, required: ['case'] } } },
+  { type: 'function', function: { name: 'skill_pack_read', description: '读官方技能包（OpenFOAM、LBM 等）的说明或参考文件。系统提示里列了已启用的包；需要字典模板、边界条件写法、报错对照、LBM 格子/碰撞算子细节时调用。file 省略读 SKILL.md，否则如 reference/boundary-conditions.md、templates/xxx。', parameters: { type: 'object', properties: { pack: { type: 'string' }, file: { type: 'string' } }, required: ['pack'] } } },  { type: 'function', function: { name: 'paper_figures', description: '把论文 PDF 里的嵌入图按原始分辨率抽出来（整页渲染会把小插图糊掉），附所在页与图注。建几何前必做：几何图里的部件（分布器圈数、孔、板厚、进气室、尺寸线起点）正文常常不写。', parameters: { type: 'object', properties: { path: { type: 'string', description: '论文 PDF 路径' } }, required: ['path'] } } },
+  { type: 'function', function: { name: 'image_crop', description: '裁剪并放大图片的一部分（LANCZOS），可选像素测距：ref={p1,p2,mm} 用图上已标注尺寸定比例尺（ref 必须和被测部件在同一个视图里：放大插图有自己的比例尺，用主图的尺寸线会差几倍），measure=[[p1,p2],...] 返回 px 与 mm（坐标用原图像素）。用于看清小插图里的部件并量尺寸，之后 vision_analyze。', parameters: { type: 'object', properties: { path: { type: 'string' }, box: { type: 'array', items: { type: 'number' }, description: '[x0,y0,x1,y1] 原图像素；不给就整张' }, scale: { type: 'number', description: '放大倍数 1–12，默认 4' }, ref: { type: 'object', description: '{p1:[x,y], p2:[x,y], mm: 实际长度}' }, measure: { type: 'array', items: { type: 'array' }, description: '[[[x1,y1],[x2,y2]], ...]' } }, required: ['path'] } } },
   { type: 'function', function: { name: 'paper_extract', description: '【学术·精准抽取】从论文 PDF 抽出「grounded 结构化要素」：带编号方程(含所在页)、表格(还原成 Markdown)、带单位数值参数(去重)。只抽原文真实出现的内容、不臆造。复杂/图片型公式建议 render_pages=true 渲染整页，再用 vision_analyze 逐字精转写、paper_param_verify 核验单位量纲。比 read_paper 更适合「精确拿数值/方程/表格」。', parameters: { type: 'object', properties: { path: { type: 'string' }, focus: { type: 'string', description: '可选：聚焦关键词，命中段落附在末尾' }, render_pages: { type: 'boolean', description: '渲染整页 PNG 供 vision_analyze 精转写方程/表格' } }, required: ['path'] } } },
   { type: 'function', function: { name: 'vision_analyze', description: '【视觉】对一张或多张本地/网络图片做"高清细看"——以 detail=high 把图片发给多模态模型并按 question 抽取结构化信息。适用于：读图表数值、读公式、读表格、读流程图。images 是路径数组（相对工作区或绝对，或 http(s) URL）。', parameters: { type: 'object', properties: { images: { type: 'array', items: { type: 'string' } }, question: { type: 'string' }, max_tokens: { type: 'number' } }, required: ['images','question'] } } },
   { type: 'function', function: { name: 'image_search', description: '【图片搜索】专门搜图片（Bing Images），返回缩略图+原图 URL+来源页。结果会自动出现在右侧"图片库"面板中可双击大图、可下载。适合"找论文里 XX 现象的图"。', parameters: { type: 'object', properties: { query: { type: 'string' }, top_k: { type: 'number', description: '默认 12，最多 30' } }, required: ['query'] } } },
@@ -258,7 +428,7 @@ const TOOLS = [
   { type: 'function', function: { name: 'foam_find_source', description: '【FOAM-Beta】在 OpenFOAM 源码中按关键字搜索（src/ + applications/）。kind：solver/model/bc/all。常用于查找曳力模型(WenYu/Ergun/SchillerNaumann)、湍流模型、求解器、边界条件等参考实现。', parameters: { type: 'object', properties: { query: { type: 'string' }, kind: { type: 'string', enum: ['solver','model','bc','all'] }, top_k: { type: 'number' } }, required: ['query'] } } },
   { type: 'function', function: { name: 'foam_clone_tutorial', description: '【FOAM-Beta】把 OpenFOAM tutorials/ 下的某个算例完整复制到工作区指定目录。tutorial_path 既可以是绝对路径，也可以是相对 tutorials/ 的路径（如 multiphase/twoPhaseEulerFoam/RAS/bubbleColumn）。', parameters: { type: 'object', properties: { tutorial_path: { type: 'string' }, dest: { type: 'string', description: '相对工作区的目标目录' } }, required: ['tutorial_path', 'dest'] } } },
   { type: 'function', function: { name: 'foam_inspect_case', description: '【FOAM-Beta】检查算例：列出 0/ constant/ system/ 内容，提取每个 patch 在每个场上的边界类型 / 求解器 / 时间步 / 关键物理参数；用于确定下一步要让用户改什么。最后附上递归文件清单。', parameters: { type: 'object', properties: { case_path: { type: 'string' } }, required: ['case_path'] } } },
-  { type: 'function', function: { name: 'foam_run_solver_async', description: '【FOAM-Beta】启动求解器（或任何 OpenFOAM 命令）为后台作业。返回 runId 供轮询。避免主会话被长任务阻塞。需审批。', parameters: { type: 'object', properties: { case_path: { type: 'string' }, command: { type: 'string' } }, required: ['case_path','command'] } } },
+  { type: 'function', function: { name: 'foam_run_solver_async', description: '【FOAM-Beta】启动求解器（或任何 OpenFOAM 命令）为后台作业。返回 runId 供轮询。避免主会话被长任务阻塞。需审批。', parameters: { type: 'object', properties: { case_path: { type: 'string' }, command: { type: 'string' }, skip_prelaunch: { type: 'boolean', description: '跳过启动前 controlDict 写出检查（仅在确认无碍时）' } }, required: ['case_path','command'] } } },
   { type: 'function', function: { name: 'foam_solver_status', description: '【FOAM-Beta】查看某个后台求解器作业的最新状态：当前Time、最近残差、log tail、是否还在跑。', parameters: { type: 'object', properties: { run_id: { type: 'string' } }, required: ['run_id'] } } },
   { type: 'function', function: { name: 'foam_solver_stop', description: '【FOAM-Beta】中止某个后台求解器作业。', parameters: { type: 'object', properties: { run_id: { type: 'string' } }, required: ['run_id'] } } },
   { type: 'function', function: { name: 'foam_stl_inspect', description: '【FOAM-Beta v6】读取 STL（ASCII/二进制）几何信息：三角形数、bbox、质心、体积、是否封闭、单位猜测、最薄边长 q05/q50（薄壁特征）、internal_seed/external_seed（射线投射得到的内/外种子点）、domain_type_hint。foam_mesh_plan 强烈依赖这些字段。', parameters: { type: 'object', properties: { stl_path: { type: 'string' } }, required: ['stl_path'] } } },
@@ -293,7 +463,7 @@ const TOOLS = [
       subtract: { type: 'array', description: '从主体挖去的基元列表（布尔差，需 trimesh+manifold3d），用于做内流腔/管道。结构同 parts。', items: { type: 'object' } },
       scale: { type: 'number', description: '整体缩放系数（如几何按 mm 建则填 0.001 转米）。默认 1。' }
     }, required: [] } } },
-  { type: 'function', function: { name: 'foam_env_check', description: '【FOAM-Beta v6 环境体检】自动识别并检查本机 OpenFOAM 运行环境，返回结构化 ✅/❌ 报告：① 平台/是否 Windows；② foamRoot 是否设置/存在/含 tutorials·src·applications；③ Windows 上是否有 WSL 且能在 WSL 里跑 OpenFOAM；④ source bashrc 后关键命令是否可用(blockMesh/snappyHexMesh/checkMesh/decomposePar/simpleFoam/interFoam/foamDictionary)；⑤ OpenFOAM 版本(WM_PROJECT_VERSION)；⑥ Python/trimesh(几何生成)与 ParaView(pvpython) 是否就绪。每个失败项附带修复建议。开局或报“命令找不到/环境没装”时先调用本工具。', parameters: { type: 'object', properties: {} } } },
+  { type: 'function', function: { name: 'foam_env_check', description: '【FOAM-Beta v6 环境体检】检查 OpenFOAM 环境（foamRoot、关键命令、版本、Python/ParaView），每个失败项附修复建议。开局或"命令找不到"时调用。', parameters: { type: 'object', properties: {} } } },
   { type: 'function', function: { name: 'foam_residual_series', description: '【FOAM-Beta】解析后台求解器 log，返回结构化的时间步与残差时序（JSON）。LLM 用来判断收敛趋势、是否震荡、何时建议改 nNonOrthoCorrectors / 松弛因子等。', parameters: { type: 'object', properties: { run_id: { type: 'string' }, max_points: { type: 'number', description: '最多返回多少个时间步（默认 60，倒数取最新）' }, fields: { type: 'array', items: { type: 'string' }, description: '只关心的场名，例如 ["U","p","k","epsilon"]' } }, required: ['run_id'] } } },
   { type: 'function', function: { name: 'foam_compare_render', description: '【FOAM-Beta】并排渲染两个 case 的同一场同一时间步，结果以 sim_compare 消息推送到前端聊天，方便定性对比（如新模型 vs baseline / 网格无关性 / 论文复现）。', parameters: { type: 'object', properties: { case_a: { type: 'string' }, case_b: { type: 'string' }, label_a: { type: 'string' }, label_b: { type: 'string' }, field: { type: 'string' }, time_step: { type: 'string' }, azimuth: { type: 'number' }, elevation: { type: 'number' } }, required: ['case_a','case_b'] } } },
   { type: 'function', function: { name: 'foam_mesh_verify', description: '【FOAM-Beta v6 网格自动核对】blockMesh / snappyHexMesh 之后必走的视觉验证闭环：① 在 case 内运行 checkMesh -allTopology -allGeometry 抓 negVol/maxSkew/maxNonOrtho/aspectRatio/openCells/failed checks；② 多角度离屏渲染网格；③ 把渲染图丢给 vision_analyze 让 VLM 按硬性 checklist 判通过；返回 JSON: {pass, stage, metrics, renders, vision, suggestions}。pass=false 时 LLM 应立刻 edit_file 修 Dict 或 foam_mesh_plan(strategy=coarsen/minimal/box_stl) 倒档重试（最多 3 次）。', parameters: { type: 'object', properties: { case_path: { type: 'string' }, stage: { type: 'string', enum: ['blockMesh','snappy','layers','final'], description: '当前在哪一关：blockMesh=刚跑完 blockMesh；snappy=刚跑完 snappyHexMesh；layers=带边界层后；final=求解前最终确认' }, ask_vision: { type: 'boolean', description: '默认 true。false 时只跑 checkMesh+渲染不调 VLM（节流）' }, n_views: { type: 'number', description: '渲染视角数 1-4，默认 2（等角 + 切片）' } }, required: ['case_path'] } } },
@@ -336,8 +506,10 @@ const TOOLS = [
       seed: { type: 'number' },
       kpi_extract: { type: 'object', description: '可选：默认 KPI 提取配置（method/regex/script）' },
       param_mapping: { type: 'object', description: '可选：默认参数→字典路径映射 {name:"<file>::<entry>"}' },
+      pipeline: { type: 'object', description: '必填：固定 stages(generate/mesh/solve/verify，各含 command 数组和 timeoutMs) 与 acceptance；含 fit/holdout 指标及统计窗。见 docs/CFD_TRIAL_PIPELINE.md' },
       notes: { type: 'string' }
-    }, required: ['study_id','search_space','objective'] } } },
+    }, required: ['study_id','base_case','search_space','objective','pipeline'] } } },
+  { type: 'function', function: { name: 'opt_run_trial', description: '执行已锁定 study 合同的隔离 CFD trial：生成→网格→求解→独立验收。失败即停，不复制旧结果；仅验收通过可回填 COMPLETE。', parameters: { type: 'object', properties: { study_id: { type: 'string' }, trial_id: { type: 'integer' } }, required: ['study_id','trial_id'] } } },
   { type: 'function', function: { name: 'opt_suggest_next', description: '【v6 优化】从 study 中拿下一个 trial 的参数建议。返回 {trial_id, params, trial_dir_suggested}。拿到后 agent 自己负责：① 拷贝 base_case 到 trial 目录；② 用 opt_apply_params 或 edit_file 写入参数；③ 跑 mesh/solve；④ opt_extract_kpi 取 KPI；⑤ opt_record_result 回填。', parameters: { type: 'object', properties: { study_id: { type: 'string' } }, required: ['study_id'] } } },
   { type: 'function', function: { name: 'opt_apply_params', description: '【v6 优化】把一组参数值写入 case 的 OpenFOAM 字典。用 foamDictionary 命令做精确替换（需要 OpenFOAM 环境已 source）。mapping 把参数名映射到 "<相对文件路径>::<dict entry path>"，如 {"nu":"constant/transportProperties::nu", "U_in":"0/U::boundaryField/inlet/value"}。需审批（会修改 case 文件）。', parameters: { type: 'object', properties: {
       case_path: { type: 'string' },
@@ -346,7 +518,13 @@ const TOOLS = [
     }, required: ['case_path','params','mapping'] } } },
   { type: 'function', function: { name: 'opt_extract_kpi', description: '【v6 优化】从 trial 的 case 目录提取一个标量 KPI。method=regex：从 file 用 pattern 抓数字（第一个捕获组）；method=pvpython：跑 pvpython script case_path …，约定脚本最后一行打印数字或 {"kpi":num}；method=script：同上但用普通 python。', parameters: { type: 'object', properties: {
       case_path: { type: 'string' },
-      method:    { type: 'string', enum: ['regex','pvpython','script'] },
+      method:    { type: 'string', enum: ['regex','pvpython','script','postproc'] },
+      function_object: { type: 'string', description: 'postproc 方法：postProcessing 子目录名' },
+      column:    { type: 'string', description: 'postproc 方法：要取时均的列名（见 foam_postproc_stats 输出）' },
+      t_start:   { type: 'number', description: 'postproc 方法：时均起点；缺省取末尾 40%' },
+      t_end:     { type: 'number' },
+      last_fraction: { type: 'number' },
+      allow_nonstationary: { type: 'boolean', description: 'postproc 方法：窗口未平稳时仍返回均值（默认拒绝）' },
       file:      { type: 'string', description: 'regex 方法：要扫的文件（log 或 postProcessing/*.dat）' },
       pattern:   { type: 'string', description: 'regex 方法：JS 正则，第一个捕获组= KPI 值' },
       flags:     { type: 'string', description: 'regex flags，如 m' },
@@ -357,6 +535,7 @@ const TOOLS = [
       study_id: { type: 'string' },
       trial_id: { type: 'number' },
       value:    { type: 'number' },
+      evidence_path: { type: 'string', description: 'COMPLETE 必填：opt_run_trial 返回的 trial-result.json 路径，将重新核验合同及产物哈希' },
       state:    { type: 'string', enum: ['COMPLETE','PRUNED','FAIL'] }
     }, required: ['study_id','trial_id'] } } },
   { type: 'function', function: { name: 'opt_status', description: '【v6 优化】查 study 当前状态：n_done / best / 最近 5 次收敛曲线 / 参数重要性（≥10 trial 才有）。每 5 个 trial 调一次贴回聊天。', parameters: { type: 'object', properties: { study_id: { type: 'string' } }, required: ['study_id'] } } },
@@ -386,25 +565,173 @@ const TOOLS = [
   { type: 'function', function: { name: 'learn_error_pattern', description: '【自进化·成长型错误记忆】排查并修好一个“内置模式没覆盖”的新报错后，把它登记成可复用模式：pattern=能匹配该报错的正则，category=归类，causes=根因数组，steps=修复步骤数组。下次同类报错 diagnose_error 会秒命中。', parameters: { type: 'object', properties: { pattern: { type: 'string' }, flags: { type: 'string' }, category: { type: 'string' }, causes: { type: 'array', items: { type: 'string' } }, steps: { type: 'array', items: { type: 'string' } } }, required: ['pattern','category'] } } },
   { type: 'function', function: { name: 'skill_export_sft', description: '【自进化·第4层】把本轮“已被 verifier 盖章通过”的整条轨迹导出成一条 SFT 语料（jsonl，将来微调本地模型用）。未通过验证会被拒绝。label=可选标注，domain=foam/mfix/lbm/general。', parameters: { type: 'object', properties: { label: { type: 'string' }, domain: { type: 'string' }, out_path: { type: 'string' } } } } },
   { type: 'function', function: { name: 'skill_eval_record', description: '【skill 升级检验·A/B】记录一次“固定案例”的运行结果，用于对比技能注入前后的效果。label 区分臂（如 baseline_无技能 / withskill_有技能）；folder=本次跑的案例文件夹；task=任务描述（两臂必须一致才可比）。verifier 通过情况与错误迭代次数自动从本轮轨迹抽取。', parameters: { type: 'object', properties: { label: { type: 'string' }, folder: { type: 'string' }, task: { type: 'string' }, note: { type: 'string' } }, required: ['label'] } } },
-  { type: 'function', function: { name: 'skill_eval_compare', description: '【skill 升级检验·A/B】对比同一 task 的两臂记录（baseline vs withskill），报告技能是否真的有帮助：verifier 通过率、错误迭代次数、用了哪些技能。task 不传则对比最近两条记录。', parameters: { type: 'object', properties: { task: { type: 'string' }, label_a: { type: 'string' }, label_b: { type: 'string' } } } } }
+  { type: 'function', function: { name: 'skill_eval_compare', description: '【skill 升级检验·A/B】对比同一 task 的两臂记录（baseline vs withskill），报告技能是否真的有帮助：verifier 通过率、错误迭代次数、用了哪些技能。task 不传则对比最近两条记录。', parameters: { type: 'object', properties: { task: { type: 'string' }, label_a: { type: 'string' }, label_b: { type: 'string' } } } } },
+  { type: 'function', function: { name: 'solver_wait', description: '【长进程·事件等待】阻塞等待后台求解作业（foam/mfix/lbm_run_*_async 或 run_command 登记的 runId）结束，或日志出现 until_regex，或超时。只占 1 个 agent 步，取代反复调 foam_solver_status 轮询（每次轮询都烧一步+上下文）。mode=any 任一结束即返回；mode=all 全部结束或任一失败才返回（其它作业结束不会打断）。End 之后收尾卡住会自动判结束。返回每个作业的 exit/用时/最后 Time/日志尾。', parameters: { type: 'object', properties: {
+      run_ids: { type: 'array', items: { type: 'string' } },
+      allow_short: { type: 'boolean', description: '允许 ≤300 s 的短等待（默认会自动延长）' },
+      mode: { type: 'string', enum: ['any','all'] },
+      timeout_s: { type: 'number', description: '最长等待秒数，默认 3600，上限 43200' },
+      until_regex: { type: 'string', description: '可选：日志新行匹配即提前返回（如 "^Time = 60\\b" 或 "FOAM FATAL"）' },
+      tail_lines: { type: 'number', description: '每个作业返回的日志尾行数，默认 15' }
+    }, required: ['run_ids'] } } },
+  { type: 'function', function: { name: 'foam_postproc_list', description: '【FOAM 后处理】列出 case/postProcessing 下所有 functionObject、各自的起始时间目录与 .dat 文件。出口组分/固含率/力等标量 KPI 前先用它看有哪些数据。', parameters: { type: 'object', properties: { case_path: { type: 'string' } }, required: ['case_path'] } } },
+  { type: 'function', function: { name: 'foam_postproc_stats', description: '【FOAM 后处理·时均统计】解析 postProcessing/<function_object>/*/<file>（自动拼接重启段），在时间窗内求每列 mean/std/批均值标准误 sem/半窗漂移 rel_drift/stationary。流化床等强波动体系务必用时均值+stationary 判据当 KPI，不要取最后一个瞬时值。矢量列展开为 _x/_y/_z。', parameters: { type: 'object', properties: {
+      case_path: { type: 'string' },
+      function_object: { type: 'string', description: 'postProcessing 下的子目录名' },
+      file: { type: 'string', description: '目录内有多个 .dat 时必填，如 surfaceFieldValue.dat' },
+      columns: { type: 'array', items: { type: 'string' }, description: '只统计这些列；缺省=全部' },
+      t_start: { type: 'number', description: '时均起点（含）' },
+      t_end: { type: 'number' },
+      last_fraction: { type: 'number', description: '未给 t_start 时取末尾这一比例的时长，如 0.4' },
+      drift_tol: { type: 'number', description: '平稳判据：半窗均值相对漂移阈值，默认 0.05' },
+      write_json: { type: 'string', description: '可选：把完整统计写到这个 JSON 文件（相对算例目录），后处理/交付直接引用，免写脚本' },
+      json: { type: 'boolean', description: '返回里附完整 JSON（列多时默认省略）' }
+    }, required: ['case_path','function_object'] } } },
+  { type: 'function', function: { name: 'vertical_distill', description: '【持续进化·垂直领域 playbook】一个垂直问题（如 MTO 流化床、某类反应器）的整套流程已验证通过后调用：把算例模板（字典/0.orig/生成脚本/自定义库源码）+ 各阶段配方 + 踩过的坑 + 基准 KPI + 本次效率指标版本化存入 playbook。下次同类任务自动注入并可 vertical_instantiate 一键实例化。同 id 再次调用=升级版本。', parameters: { type: 'object', properties: {
+      id: { type: 'string', description: '稳定英文 id，如 mto-dmto-fluidized-bed' },
+      title: { type: 'string' },
+      triggers: { type: 'array', items: { type: 'string' }, description: '触发词（至少 4 个，含中英文：如 MTO/甲醇制烯烃/DMTO/流化床/fluidized/EMMS）' },
+      case_path: { type: 'string', description: '已验证算例目录（结果时间步/processor*/日志自动跳过）' },
+      extra_paths: { type: 'array', items: { type: 'string' }, description: '附带目录：自定义模型源码(src/EMMSbubbling)、CSTR 脚本、后处理脚本等' },
+      kpis: { type: 'object', description: '本次计算得到的 KPI' },
+      benchmarks: { type: 'object', description: '验收基准（论文/实验值）' },
+      pitfalls: { type: 'array', items: { type: 'string' } },
+      notes: { type: 'string', description: '适用范围、哪些参数换工况要改' }
+    }, required: ['id','case_path','triggers'] } } },
+  { type: 'function', function: { name: 'vertical_instantiate', description: '【持续进化】把已验证的 playbook 模板算例拷到新目录（附带目录拷到其同级），返回各阶段配方。之后只改与本任务不同的工况参数，重建网格→验证→求解。', parameters: { type: 'object', properties: { id: { type: 'string' }, dest: { type: 'string' }, version: { type: 'number' } }, required: ['id','dest'] } } },
+  { type: 'function', function: { name: 'kpi_credibility', description: '【复现 KPI 可信度】报告/收尾前必用：给出反应开启时刻、统计时间窗、气相停留时间 τ、各 KPI 本次值/原文值/初值，判断统计窗是否已过 n·τ 准稳态、窗长是否 ≥τ、哪些 KPI 只是初值主导（不能作证据）。论文复现任务未通过本检查不得 task_complete。', parameters: { type: 'object', properties: { t_react_start: { type: 'number' }, t_window: { type: 'array', items: { type: 'number' }, description: '[t0, t1] 统计窗 (s)' }, tau: { type: 'number', description: '气相停留时间 V/Qg (s)' }, n_tau: { type: 'number', description: '默认 2' }, outlet_min_flux: { type: 'number', description: '出口各产物组分通量最小值 kg/s（可选）' }, kpis: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, this: { type: 'number' }, paper: { type: 'number' }, init: { type: 'number' } }, required: ['name', 'this'] } } }, required: ['t_window', 'tau', 'kpis'] } } },
+  { type: 'function', function: { name: 'foam_locate', description: '【FOAM 发散定位】求解发散/时间步崩塌后第一步必用：对最近 n 个写出时刻跑 fieldMinMax（并行算例自动 mpirun），返回各场极值单元坐标、极值随时间的增长倍数、是否钉在同一单元、离得最近的 3 个 patch。用它确定发散源（哪个入口/出口/内构件）再对症修，不要凭猜测改时间步或网格。', parameters: { type: 'object', properties: { case_path: { type: 'string' }, n_times: { type: 'number', description: '取最近几个写出时刻，默认 3' } }, required: ['case_path'] } } },
+  { type: 'function', function: { name: 'vertical_list', description: '【持续进化】列出已有垂直领域 playbook 及其历次效率（LLM 步数/报错/耗时）。', parameters: { type: 'object', properties: {} } } }
 ];
 
 // 工具分组（用于 UI 开关；编辑类始终开启）
 const TOOL_GROUPS = {
-  edit: ['list_dir','read_file','write_file','edit_file','multi_edit','glob','grep_search','update_todos','task_complete','git_log_recent','git_diff','git_revert_to','diagnose_error','algo_extract_contract','case_probe_facts','algo_case_audit','skill_save','skill_recall','skill_list','skill_forget','skill_export','skill_import','learn_error_pattern','skill_export_sft','skill_eval_record','skill_eval_compare'],  // 常亮（V8: git/诊断/四步法；V10: 自进化技能库）
+  edit: ['list_dir','read_file','write_file','edit_file','multi_edit','glob','grep_search','update_todos','task_complete','git_log_recent','git_diff','git_revert_to','diagnose_error','algo_extract_contract','case_probe_facts','algo_case_audit','skill_save','skill_recall','skill_list','skill_forget','skill_export','skill_import','learn_error_pattern','skill_export_sft','skill_eval_record','skill_eval_compare','run_stage_start','run_stage_done','run_status_load','vertical_distill','vertical_instantiate','vertical_list','foam_locate','kpi_credibility'],  // 常亮（V8: git/诊断/四步法；V10: 自进化技能库）
   shell: ['run_command'],
   web: ['web_search','fetch_url','download_file','image_search','paper_search','paper_fetch'],
   doc: ['read_document','read_paper','paper_extract','vision_analyze','request_user_digitize'],
   sim: ['sim_render','sim_open_paraview','sim_run_openfoam','vision_analyze'],
-  foam: ['foam_find_tutorial','foam_find_source','foam_clone_tutorial','foam_inspect_case','foam_run_solver_async','foam_solver_status','foam_solver_stop','foam_stl_inspect','foam_mesh_plan','foam_compute_first_layer','foam_mesh_box_stl','foam_stl_generate','foam_env_check','foam_residual_series','foam_compare_render','foam_mesh_verify','foam_mesh_stl_check','foam_stl_render','foam_patch_diff','foam_geom_verify','foam_solve_verify','foam_post_verify','paper_param_verify','vision_analyze','sim_render','read_document','paper_extract','foam_dry_compile'],
-  mfix: ['mfix_find_tutorial','mfix_clone_tutorial','mfix_inspect_case','mfix_run_solver_async','mfix_solver_status','mfix_solver_stop','sim_render','sim_open_paraview','vision_analyze','foam_post_verify','foam_solve_verify','read_document'],
-  lbm:  ['lbm_find_tutorial','lbm_clone_tutorial','lbm_inspect_case','lbm_run_async','lbm_solver_status','lbm_solver_stop','sim_render','vision_analyze','foam_post_verify','foam_solve_verify','read_document'],
-  opt:  ['opt_study_create','opt_suggest_next','opt_apply_params','opt_extract_kpi','opt_record_result','opt_status','opt_render','read_document','foam_clone_tutorial','foam_inspect_case','foam_run_solver_async','foam_solver_status','foam_mesh_verify','vision_analyze','foam_post_verify']
+  foam: ['foam_find_tutorial','foam_find_source','foam_clone_tutorial','foam_inspect_case','foam_run_solver_async','foam_solver_status','foam_solver_stop','foam_stl_inspect','foam_mesh_plan','foam_compute_first_layer','foam_mesh_box_stl','foam_stl_generate','foam_env_check','foam_residual_series','foam_compare_render','foam_mesh_verify','foam_mesh_stl_check','foam_stl_render','foam_patch_diff','foam_geom_verify','foam_solve_verify','foam_post_verify','paper_param_verify','vision_analyze','sim_render','read_document','paper_extract','foam_dry_compile','foam_postproc_list','foam_postproc_stats','solver_wait'],
+  mfix: ['mfix_find_tutorial','mfix_clone_tutorial','mfix_inspect_case','mfix_run_solver_async','mfix_solver_status','mfix_solver_stop','solver_wait','sim_render','sim_open_paraview','vision_analyze','foam_post_verify','foam_solve_verify','read_document'],
+  lbm:  ['lbm_find_tutorial','lbm_clone_tutorial','lbm_inspect_case','lbm_run_async','lbm_solver_status','lbm_solver_stop','solver_wait','sim_render','vision_analyze','foam_post_verify','foam_solve_verify','read_document'],
+  opt:  ['opt_study_create','opt_suggest_next','opt_run_trial','opt_apply_params','opt_extract_kpi','opt_record_result','opt_status','opt_render','read_document','foam_clone_tutorial','foam_inspect_case','foam_run_solver_async','foam_solver_status','foam_mesh_verify','vision_analyze','foam_post_verify','foam_postproc_list','foam_postproc_stats','solver_wait']
 };
 const DEFAULT_ENABLED = new Set([...TOOL_GROUPS.edit, ...TOOL_GROUPS.shell, ...TOOL_GROUPS.web, ...TOOL_GROUPS.doc]);
 function filterTools(enabled) { return TOOLS.filter(t => enabled.has(t.function.name)); }
+// 规划模式（对齐 OpenCode Plan agent）：只读调研+出方案，屏蔽一切写文件/跑命令/启动求解/改参数的工具
+const PLAN_BLOCKED = new Set(['write_file','edit_file','multi_edit','git_revert_to','run_command','sim_run_openfoam','sim_open_paraview',
+  'foam_clone_tutorial','foam_run_solver_async','foam_solver_stop','foam_mesh_plan','foam_mesh_box_stl','foam_stl_generate','foam_dry_compile',
+  'mfix_clone_tutorial','mfix_run_solver_async','mfix_solver_stop','lbm_clone_tutorial','lbm_run_async','lbm_solver_stop',
+  'opt_study_create','opt_run_trial','opt_apply_params','opt_record_result','download_file','skill_forget','skill_import','vertical_instantiate']);
+function toolsForMode(enabled, mode, session) {
+  let list = filterTools(enabled);
+  const always = typeof ALWAYS_TOOLS !== 'undefined' ? ALWAYS_TOOLS : [];
+  // 后处理出图、技能包查阅：任何会话都可用（不需要在工具开关里勾）
+  for (const n of always) if (!enabled.has(n)) { const t = TOOLS.find(x => x.function.name === n); if (t) list.push(t); }
+  if (session) list = leanTools(list, session);
+  if (process.env.LEAN_TOOLS !== '0') list = list.filter(t => !LEAN_DROP.has(t.function.name)).map(slimTool);
+  if (typeof packBlocksTool === 'function') list = list.filter(t => !packBlocksTool(t.function.name));
+  if (mode === 'plan') return list.filter(t => !PLAN_BLOCKED.has(t.function.name));
+  return typeof mcpToolDefs === 'function' ? list.concat(mcpToolDefs()) : list;
+}
+const ALWAYS_TOOLS = ['post_view', 'skill_pack_read'];
+// 技能包关掉时，对应求解器的专用工具也不发给模型（OpenFOAM 包管 foam_*，LBM 包管 lbm_*，MFIX 包管 mfix_*）
+function packBlocksTool(name) {
+  if (typeof Cap === 'undefined') return false;
+  const st = SETTINGS.packs || {};
+  for (const [id, meta] of Object.entries(Cap.PACK_META)) {
+    const on = st[id] ?? meta.defaultOn;
+    if (!on && meta.tools && meta.tools.test(name) && !ALWAYS_TOOLS.includes(name)) return true;
+  }
+  return false;
+}
+// ---- MCP：设置里配置的外部服务，工具名 mcp__服务__工具 ----
+const MCP = new Map();   // name -> Cap.McpServer
+function mcpToolDefs() {
+  const out = [];
+  for (const [srv, m] of MCP) if (m.status === 'ready') for (const t of m.tools) {
+    out.push({ type: 'function', function: { name: Cap.mcpToolName(srv, t.name), description: `【MCP · ${srv}】${(t.description || '').slice(0, 900)}`, parameters: t.inputSchema && t.inputSchema.type === 'object' ? t.inputSchema : { type: 'object', properties: {} } } });
+  }
+  return out;
+}
+async function mcpCall(toolName, args) {
+  for (const [srv, m] of MCP) for (const t of m.tools) if (Cap.mcpToolName(srv, t.name) === toolName) {
+    if (m.status !== 'ready') throw new Error(`MCP 服务 ${srv} 未就绪：${m.error || m.status}`);
+    return await m.call(t.name, args);
+  }
+  throw new Error('没有这个 MCP 工具：' + toolName);
+}
+async function startMcpServers() {
+  for (const m of MCP.values()) m.stop();
+  MCP.clear();
+  for (const cfg of (SETTINGS.mcpServers || [])) {
+    if (!cfg || !cfg.name) continue;
+    const m = new Cap.McpServer(cfg); MCP.set(cfg.name, m);
+    if (cfg.enabled === false) continue;
+    m.start().then(ts => console.log(`[mcp] ${cfg.name} 就绪，${ts.length} 个工具`)).catch(e => { m.status = 'error'; m.error = e.message; console.warn(`[mcp] ${cfg.name} 启动失败：${e.message}`); });
+  }
+}
+const SKILL_PACK_DIR = typeof path !== 'undefined' ? path.join(__dirname, 'agent-skills') : '';
+let _packIndex = { at: 0, text: '' };
+async function refreshPackIndex() {
+  const packs = (await Cap.listPacks(SKILL_PACK_DIR, SETTINGS.packs || {})).filter(p => p.enabled);
+  _packIndex = { at: Date.now(), text: packs.length ? '\n\n# 📦 已启用的官方技能包（需要细节时用 skill_pack_read(pack, file) 读，不要凭记忆写字典）\n'
+    + packs.map(p => `- ${p.id}（${p.title}）：${p.description.slice(0, 160)}${p.files.length ? `\n  参考：${p.files.slice(0, 8).join('、')}` : ''}`).join('\n') + '\n' : '' };
+}
+// 按需工具集（学 OpenCode：每步只带当前任务用得上的工具）。专题工具组只在任务文本命中或本会话已用过时才发给模型；
+// 每次调用的固定开销从 ~96 个工具降到 ~60 个。LEAN_TOOLS=0 关闭。
+// "论文复现 / 算法植入"类任务才需要论文工具与反漂移长提示；只是"和文献基准值对比"（Hysing 2009 气泡、
+// 圆柱绕流 St 数等）的任务，工况已在任务里写全，不需要读论文、锁参数、四步法。
+// 判定：出现复现/植入/方程/曳力等词，或给了 pdf；单独的"文献/基准/benchmark"不算。
+const _WANT_PAPER_TOOLS_RE = /论文|\bpaper\b|复现|reproduc|植入|implement(?:ing)? (?:the )?(?:model|equation)|方程|algorithm|算法|closure|曳力|drag model|drag\b|源项|source term|fvoption|coded|\.pdf\b|读论文|论文原文|按原文|重现|重新做|这篇(?:文献|文章)|(?:照着?|按照?|依照|根据)[^\n，。]{0,10}(?:文献|文章)/i;
+function wantPaperTask(t) { return _WANT_PAPER_TOOLS_RE.test(String(t || '')); }
+const LEAN_TOOL_TOPICS = [
+  [/优化|寻优|反演|optimi[sz]|bayes|贝叶斯|参数扫描|sweep|study|trial|DOE|代理模型|surrogate/i,
+    ['opt_study_create','opt_suggest_next','opt_run_trial','opt_apply_params','opt_extract_kpi','opt_record_result','opt_status','opt_render']],
+  [/技能|skill|沉淀|sft|评测|eval/i, ['skill_export','skill_import','skill_forget','skill_export_sft','skill_eval_record','skill_eval_compare']],
+  [/playbook|模板算例|vertical|沉淀|复用/i, ['vertical_distill','vertical_instantiate','vertical_list']],
+  [_WANT_PAPER_TOOLS_RE,
+    ['algo_extract_contract','case_probe_facts','algo_case_audit','paper_param_verify','foam_dry_compile','foam_find_source','read_paper','paper_extract','paper_figures','image_crop','paper_fetch','paper_search']],
+  [/\bstl\b|snappy|几何文件|geometry|cad/i, ['foam_stl_inspect','foam_stl_generate','foam_mesh_box_stl','foam_mesh_stl_check','foam_stl_render','foam_compute_first_layer','foam_geom_verify','foam_mesh_plan','foam_patch_diff']],
+  [/论文|复现|reproduce|KPI|收率|选择性|转化率|yield|selectivity|conversion|可信/i, ['kpi_credibility']],
+  [/(对比|比较|compare)[^\n]{0,8}(图|渲染|云图|render)|并排/i, ['foam_compare_render']],
+  [/渲染|云图|截图|可视化|出图|画图|render|contour|图片|图像|看图|vlm|vision|\.png|\.jpe?g/i, ['vision_analyze','sim_render','foam_solve_verify','foam_post_verify']],
+  [/技能|skill|经验|沉淀|教训|lesson|记住/i, ['skill_save','skill_recall','skill_list','learn_error_pattern']],
+  [/阶段|stage|流水线|pipeline|断点|重启|恢复|resume/i, ['run_stage_start','run_stage_done']],
+  [/paraview|交互查看/i, ['sim_open_paraview']],
+  [/图|image|digiti|扣点|曲线/i, ['image_search','request_user_digitize']],
+  [/下载|download|网页|url|http/i, ['download_file']],
+  [/回滚|revert|git|diff|改动/i, ['git_revert_to','git_diff','git_log_recent']],
+  [/搜索|检索|search|\bweb\b|网上|上网|查资料|查文献|找文献|论文|\bpaper\b|https?:/i, ['web_search','fetch_url']],
+  [/\.pdf\b|\.docx?\b|文档|document|论文|\bpaper\b/i, ['read_document']],
+];
+// 只读的"同步求解"老工具：长算例一律走 foam_run_solver_async，避免模型误选
+const LEAN_DROP = new Set(['sim_run_openfoam', 'sim_open_paraview']);   // ParaView GUI 已删除；OpenFOAM 出图用 post_view，sim_render 只留给 LBM/MFIX 的 vtk 输出
+// 去掉版本标签前缀（【V8 招3】【FOAM-Beta v6 …】），每次调用省约 800 字符；缓存，按工具对象复用
+const _slimCache = new WeakMap();
+function slimTool(t) {
+  let s = _slimCache.get(t);
+  if (!s) {
+    const d = String(t.function.description || '').replace(/^\s*【[^】]{0,40}】\s*/, '');
+    s = d === t.function.description ? t : { ...t, function: { ...t.function, description: d } };
+    _slimCache.set(t, s);
+  }
+  return s;
+}
+const LEAN_GATED = new Set(LEAN_TOOL_TOPICS.flatMap(([, ts]) => ts));
+function leanTools(list, session) {
+  if (process.env.LEAN_TOOLS === '0') return list;
+  const msgs = session.messages || [];
+  const userText = msgs.filter(m => m.role === 'user').map(m => typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? m.content.map(c => c.text || '').join(' ') : '')).join('\n')
+    + '\n' + (session._pendingUserText || '') + '\n' + ((session.task && session.task.taskText) || '');
+  const used = new Set();
+  for (const m of msgs) for (const tc of (m.tool_calls || [])) if (tc && tc.function) used.add(tc.function.name);
+  const keep = new Set();
+  for (const [re, ts] of LEAN_TOOL_TOPICS) if (re.test(userText)) ts.forEach(t => keep.add(t));
+  return list.filter(t => { const n = t.function.name; return !LEAN_GATED.has(n) || keep.has(n) || used.has(n); });
+}
 
-const NEEDS_APPROVAL = new Set(['run_command', 'sim_run_openfoam', 'foam_run_solver_async', 'foam_mesh_plan', 'foam_mesh_box_stl', 'foam_stl_generate', 'mfix_run_solver_async', 'lbm_run_async', 'opt_study_create', 'opt_apply_params']);
+const NEEDS_APPROVAL = new Set(['run_command', 'sim_run_openfoam', 'foam_run_solver_async', 'foam_mesh_plan', 'foam_mesh_box_stl', 'foam_stl_generate', 'mfix_run_solver_async', 'lbm_run_async', 'opt_study_create', 'opt_run_trial', 'opt_apply_params']);
 const MODIFYING = new Set(['write_file', 'edit_file', 'multi_edit']);  // v0.9.0: multi_edit 也算修改类
 
 // ====================== v0.9.0 (V8) 招1 + 招3 + 四步法 辅助层 ======================
@@ -441,7 +768,7 @@ async function ensureGitRepo() {
     const gi = path.join(WORKSPACE, '.gitignore');
     let cur = ''; try { cur = await fs.readFile(gi, 'utf8'); } catch {}
     if (!/# cfdriver auto-generated/.test(cur)) {
-      cur += '\n# cfdriver auto-generated (V8)\nprocessor*/\n*.foam\npostProcessing/\nVTK/\n*.vtk\n*.vtu\n*.pvd\n*.log\n';
+      cur += '\n# cfdriver auto-generated (V8)\nprocessor*/\n*.foam\npostProcessing/\nVTK/\n*.vtk\n*.vtu\n*.pvd\n*.log\n.nullflux/tool-output/\n';
       await fs.writeFile(gi, cur, 'utf8');
     }
   } catch {}
@@ -499,7 +826,7 @@ const ERROR_PATTERNS = [
     category: 'setFields region 选择器失效',
     causes: ['boxToCell bbox 超出网格域', 'cellSet/cellZone 名拼错', '没先 setSet/topoSet'],
     steps: ['edit_file system/setFieldsDict 缩小 bbox 到网格范围', 'run_command("foamDictionary system/setFieldsDict") 验证'] },
-  { re: /Maximum number of nonlinear iterations|Continuity error/i,
+  { re: /Maximum number of nonlinear iterations|continuity error[^\n]*(?:nan|inf)/i,
     category: '连续性 / p-U 耦合失衡',
     causes: ['PIMPLE nOuterCorrectors 不够', 'inlet/outlet 不通量守恒', 'atmosphere BC 类型错'],
     steps: ['加 nOuterCorrectors 到 3-5', 'case_probe_facts 看 patch 是否成对（一进一出）'] },
@@ -515,7 +842,8 @@ const ERROR_PATTERNS = [
     category: 'patch 名不匹配',
     causes: ['0/ 里 patch 名 ≠ polyMesh/boundary 里 patch 名', 'blockMesh 重生成后 0/ 未同步'],
     steps: ['foam_inspect_case 列实际 patch', '改 0/ 各场 boundaryField 对齐'] },
-  { re: /Time step continuity errors.*sum local = [\d.eE+-]+, global = [\d.eE+-]+, cumulative/i,
+  // 每步都会打印 continuity 行；只有 sum local ≥ 1e-2 量级才算漂移
+  { re: /Time step continuity errors[^\n]*sum local = ([^\s,]+)/gi, when: ms => ms.some(m => { const v = Number(m[1]); return !Number.isFinite(v) || v >= 1e-2; }),
     category: '质量守恒漂移',
     causes: ['inlet/outlet 通量不平衡', 'p BC 类型用错（应 zeroGradient 用了 fixedValue 等）'],
     steps: ['case_probe_facts 看入出口对应关系', 'foam_inspect_case 看 0/p 的 boundaryField'] },
@@ -527,22 +855,82 @@ const ERROR_PATTERNS = [
     category: 'OpenFOAM 主动 abort',
     causes: ['场含 nan 后求解器主动停', 'patch 配对错误'],
     steps: ['看 abort 前 50 行 log', 'diagnose_error 重新匹配上一段错误'] },
+  { re: /deltaT\s*=\s*(?:\d(?:\.\d+)?e-(?:0?[89]|1\d))\b/i,
+    category: '时间步崩塌（deltaT 被自适应压到 ≤1e-8）',
+    causes: ['局部速度/体积分数爆值导致 Courant 数失控', '入口或分布器附近网格过细', 'maxCo/maxAlphaCo 过严'],
+    steps: ['foam_locate(case_path) 找极值所在单元与最近 patch', '对症修（BC/网格/物性），不要只调小 maxCo'] },
+  { re: /number of processor directories = \d+ is not equal to the number of processors|Number of processor directories.*not equal|MPI_Init.*fail|There are not enough slots available/i,
+    category: '并行分解 / MPI 配置不一致',
+    causes: ['decomposeParDict.numberOfSubdomains 与 mpirun -np 不一致', '重新分网格后没重跑 decomposePar', '申请核数超过可用槽位'],
+    steps: ['foamDictionary system/decomposeParDict -entry numberOfSubdomains', '确认 processor* 目录数并重跑 decomposePar -force', '降低 -np 或加 --oversubscribe 前先查核占用'] },
 ];
+
+// End 出现在最后一个 "Time =" 之后：计算已完成，之后的 abort/MPI 噪声不是错误
+function _textEndedCleanly(s) {
+  const lines = String(s || '').split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i].replace(/^\[\d+\]\s*/, '').trim();
+    if (l === 'End') return true;
+    if (/^Time\s*=/.test(l)) return false;
+  }
+  return false;
+}
 
 function diagnoseErrorText(text) {
   const s = String(text || '');
   if (!s.trim()) return { matched: false, hint: 'text 为空' };
+  if (_textEndedCleanly(s) && !/FOAM FATAL (IO )?ERROR/.test(s.slice(s.lastIndexOf('\nEnd')))) {
+    return { matched: true, count: 1, hits: [{ category: '非错误：求解已正常结束', matched_snippet: 'End（位于最后一个 Time = 之后）',
+      causes: ['求解器打印 End 后在析构/MPI 收尾时 abort（如 v2306 twoPhaseEulerFoam exit 134），计算结果完整'],
+      next_steps: ['不要重算；直接进入后处理', '如需确认：检查最后时间目录的场文件齐全'] }] };
+  }
   const hits = [];
   // 成长型错误记忆：内置模式 + 学到的模式（learn_error_pattern 追加）合并匹配
   const allPatterns = ERROR_PATTERNS.concat(SkillLib.learnedErrorPatterns());
   for (const p of allPatterns) {
-    const m = s.match(p.re);
+    let m;
+    if (p.when) { const ms = [...s.matchAll(p.re)]; m = p.when(ms) ? ms.find(x => { const v = Number(x[1]); return !Number.isFinite(v) || v >= 1e-2; }) : null; }
+    else m = s.match(p.re);
     if (m) hits.push({ category: p.category + (p.learned ? '（已学习）' : ''), matched_snippet: m[0].slice(0, 120), causes: p.causes, next_steps: p.steps });
   }
   if (!hits.length) {
     return { matched: false, hint: `未匹配已知模式（内置 ${ERROR_PATTERNS.length} + 已学习 ${SkillLib.learnedErrorPatterns().length} 条）。\n建议：① 把 log tail 200 行回贴让模型逐行读；② 排查并修好后调 learn_error_pattern 把这个新错登记成可复用模式（下次秒命中）；③ run_stage_done({passed:false,memo:...}) 转人工。` };
   }
   return { matched: true, count: hits.length, hits };
+}
+
+// HC-4 错误预算的判定（纯函数，便于测试）。只有「一次求解/网格运行失败」才算一次；
+// 读日志、读文档时碰到 FOAM FATAL / sigFpe 字样的只读命令不算；同一次失败被反复查询只算一次。
+const _SOLVER_EXE = /^(mpirun|mpiexec|foamRun|foamMultiRun|foamJob|[A-Za-z0-9]+Foam|blockMesh|snappyHexMesh|decomposePar|reconstructPar|reconstructParMesh|setFields|checkMesh|topoSet|createBaffles|createPatch|mapFields|mapFieldsPar|extrudeMesh|surfaceFeatureExtract|mfixsolver|mfix|lmp_\w+|liggghts\w*)$/;
+function isSolverLaunchCommand(cmd) {
+  for (const seg of String(cmd || '').split(/&&|\|\||[;|\n]/)) {
+    const toks = seg.trim().replace(/^['"(]+/, '').split(/\s+/).filter(Boolean);
+    let i = 0;
+    while (i < toks.length && (/^(nohup|time|exec|stdbuf|nice|setsid)$/.test(toks[i]) || /^\w+=/.test(toks[i]) || /^-/.test(toks[i]) || (toks[i - 1] === 'timeout' && /^\d/.test(toks[i])) || toks[i] === 'timeout')) i++;
+    const exe = (toks[i] || '').split('/').pop().replace(/['")]+$/, '');
+    if (_SOLVER_EXE.test(exe)) return true;
+    if (/^All(run|mesh)\w*$/.test(exe)) return true;
+    if (/^(bash|sh)$/.test(exe) && /^(?!-)\S*(\.sh|All(run|mesh)\w*)$/.test(toks[i + 1] || '')) return true;
+  }
+  return false;
+}
+function classifySolverError(name, args, result) {
+  const txt = String(result || '');
+  if (name === 'run_command' && !isSolverLaunchCommand(args && args.command)) return null;
+  const m = /FOAM FATAL (IO )?ERROR|Floating point exception|sigFpe|Segmentation fault|FOAM aborting|已结束\(exit=[1-9]/.exec(txt);
+  if (!m) return null;
+  let cat = '';
+  try { const d = diagnoseErrorText(txt.slice(-8000)); if (d.matched && d.hits && d.hits.length) cat = d.hits[0].category; } catch (e) { cat = String(); }
+  if (/^非错误/.test(cat)) return null;
+  if (!cat) {
+    // 未归类的错误按报错内容区分，免得三个互不相干的新错误被算成「同一类 3 次」
+    const sig = txt.slice(m.index).split(/\r?\n/).map(x => x.trim()).filter(x => x && !/^-->|^\(openfoam|^\[\d+\]\s*$/.test(x)).slice(0, 2).join(' ')
+      .replace(/\/[\w./-]+/g, '<path>').replace(/\d+(\.\d+)?(e[-+]?\d+)?/gi, '#').slice(0, 90);
+    cat = 'unknown: ' + (sig || m[0]);
+  }
+  const rid = (args && (args.run_id || (Array.isArray(args.run_ids) && args.run_ids.join(',')))) || (/runId[:：]?\s*([0-9a-f]{8})/.exec(txt) || [])[1] || '';
+  const statusTool = /status$|^solver_wait$/.test(name);
+  return { cat, once: statusTool && rid ? cat + '|' + rid : null };
 }
 
 // 算法契约抽取（V8 四步法·步1）
@@ -802,6 +1190,7 @@ function addPendingEdit(session, edit) {
   session.pendingEdits.push(edit);
   if (session.currentCheckpoint && !(edit.path in session.currentCheckpoint.files))
     session.currentCheckpoint.files[edit.path] = edit.oldContent;
+  try { recordTurnFile(session.task, edit.path, edit.oldContent); } catch {}
 }
 
 // ====================== ParaView 窗口投影（核心新功能） ======================
@@ -1039,11 +1428,11 @@ async function runOpenFoam({ casePath, command }, ws) {
   return await new Promise((resolve) => {
     ws.send(JSON.stringify({ type: 'term', line: `$ [OF] ${command}  (${cd})` }));
     const child = spawn(shell, shellArgs, { cwd: cd });
-    let out = '';
-    const onData = d => { const s = d.toString(); out += s; s.split(/\r?\n/).forEach(l => l && ws.send(JSON.stringify({ type: 'term', line: l }))); };
+    const buf = headTailBuffer();
+    const onData = d => { const s = d.toString(); buf.push(s); s.split(/\r?\n/).forEach(l => l && ws.send(JSON.stringify({ type: 'term', line: l }))); };
     child.stdout.on('data', onData); child.stderr.on('data', onData);
     const t = setTimeout(() => { try { child.kill(); } catch {} }, 600000);
-    child.on('close', code => { clearTimeout(t); ws.send(JSON.stringify({ type: 'term', line: `[退出码 ${code}]` })); resolve(`[退出码 ${code}]\n${out.slice(0, 50000)}`); });
+    child.on('close', code => { clearTimeout(t); ws.send(JSON.stringify({ type: 'term', line: `[退出码 ${code}]` })); resolve(`[退出码 ${code}]\n${buf.toString()}`); });
     child.on('error', err => { clearTimeout(t); resolve(`[启动失败] ${err.message}`); });
   });
 }
@@ -1152,7 +1541,9 @@ async function foamCloneTutorial(tutorialPath, dest) {
   await fs.mkdir(target, { recursive: true });
   // 用 fs.cp（Node 16.7+）递归复制
   await fs.cp(src, target, { recursive: true, force: false, errorOnExist: false });
-  return `已复制 tutorial：\n  源：${src}\n  目标：${path.relative(WORKSPACE, target)}\n建议下一步：foam_inspect_case("${path.relative(WORKSPACE, target)}")`;
+  let pre = '';
+  try { pre = Prelaunch.formatPrelaunch(await Prelaunch.prelaunchCheck(target)); } catch {}
+  return `已复制 tutorial：\n  源：${src}\n  目标：${path.relative(WORKSPACE, target)}${pre}\n建议下一步：foam_inspect_case("${path.relative(WORKSPACE, target)}")`;
 }
 
 // 解析 boundaryField { patch { type X; ... } }
@@ -1266,67 +1657,273 @@ async function foamInspectCase(casePath) {
 
 // ====================== OpenFOAM 求解器异步监测 ======================
 const SOLVER_RUNS = new Map();  // runId -> { proc, casePath, command, log:[], started, ended, exitCode, subs:Set<ws> }
+const SOLVER_EVENTS = new EventEmitter();
+SOLVER_EVENTS.setMaxListeners(0);
+function _solverEnded(run) {
+  try { SOLVER_EVENTS.emit('ended', run.runId); } catch {}
+  try {
+    const msg = JSON.stringify({ type: 'runs_update', reason: 'solver_ended', runId: run.runId });
+    for (const c of allClients) if (c.readyState === 1) c.send(msg);
+  } catch {}
+  try { broadcastTaskState(); } catch {}
+  try { _scheduleWake(run); } catch (e) { console.warn('[wake]', e.message); }
+}
 
-async function foamRunSolverAsync({ case_path, command }, ws) {
+// ── 可续接后台作业：detached 启动 + 输出落盘 <case>/log.nullflux.<runId>，服务重启/重新部署不杀求解器，启动时按 PID 重新接管 ──
+const RUNS_INDEX = path.join(__dirname, 'tasks', '_runs.json');
+const EXIT_MARK = '__NF_EXIT__=';
+const WIN_RUNNER_JS = "const fs=require('fs'),{spawn}=require('child_process');const [lf,cd,cmd,mark]=process.argv.slice(1);const fd=fs.openSync(lf,'a');" +
+  "const p=spawn('cmd.exe',['/d','/s','/c','\"'+cmd+'\"'],{cwd:cd,stdio:['ignore',fd,fd],windowsHide:true,windowsVerbatimArguments:true});" +
+  "const done=c=>{try{fs.appendFileSync(lf,'\\n'+mark+c+'\\n')}catch{}process.exit(0)};p.on('exit',c=>done(c==null?-1:c));p.on('error',()=>done(-1));";
+function _persistRuns() {
+    const weekAgo = Date.now() - 7 * 86400_000;
+    const eligible = [...SOLVER_RUNS.values()].filter(run => run.logFile);
+    const selected = [...eligible.filter(run => !run.ended), ...eligible.filter(run => run.ended > weekAgo).slice(-200)];
+    const arr = selected
+      .map(r => ({ runId: r.runId, kind: r.kind || 'foam', pid: r.pid, casePath: r.casePath, command: r.command, logFile: r.logFile,
+        started: r.started, ended: r.ended, exitCode: r.exitCode, ownerTaskId: r.ownerTaskId || null, broadcast: !!r.broadcast, external: !!r.external,
+        redirLog: r.redirLog || '' }));
+    try {
+      fssync.mkdirSync(path.dirname(RUNS_INDEX), { recursive: true });
+      const temporary = RUNS_INDEX + '.tmp';
+      fssync.writeFileSync(temporary, JSON.stringify(arr, null, 1));
+      fssync.renameSync(temporary, RUNS_INDEX);
+    } catch (e) { console.warn('[runs] 保存失败:', e.message); }
+}
+function _pidAlive(pid) {
+  if (!pid) return false;
+  try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; }
+}
+// detached 启动的是独立进程组：必须按组/树杀，否则只杀掉外层 shell，求解器本体继续跑
+function killRunTree(run, hard) {
+  const pid = run.pid || (run.proc && run.proc.pid);
+  if (!pid) return;
+  if (IS_WIN) { try { spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true }); } catch {} return; }
+  const sig = hard ? 'SIGKILL' : 'SIGTERM';
+  try { process.kill(-pid, sig); } catch { try { process.kill(pid, sig); } catch {} }
+}
+function _pushRunLines(run, text) {
+  const lines = [];
+  for (const l of text.split(/\r?\n/)) {
+    if (!l) continue;
+    if (l.startsWith(EXIT_MARK)) { const c = Number(l.slice(EXIT_MARK.length).trim()); if (Number.isFinite(c)) run._markExit = c; continue; }
+    lines.push(l.length > 2000 ? l.slice(0, 2000) + ' …[行过长截断]' : l);
+  }
+  if (!lines.length) return;
+  // 多相/多组分求解器单步日志可超过 4000 行缓冲：单独记住最近的 Time，摘要不再显示 Time=?
+  for (let i = lines.length - 1; i >= 0; i--) { const m = lines[i].match(/^Time\s*=\s*([\d.eE+\-]+)/); if (m) { run._lastTime = m[1]; break; } }
+  if ((run.kind || 'foam') === 'foam' && !run.external && SETTINGS.solverHealth !== false && !run.ended) try { _healthCheck(run, lines); } catch {}
+  for (const l of lines) run.log.push(l);
+  run._lineNo = (run._lineNo || 0) + lines.length;
+  if (run.log.length > 4000) run.log.splice(0, run.log.length - 4000);
+  for (const sub of run.subs) if (sub.readyState === 1) { try { sub.send(JSON.stringify({ type: 'solver_log', runId: run.runId, lines })); } catch {} }
+  if (run.broadcast && allClients.size) {
+    // 终端面板只需要看到进度：每个 tail 周期合并为一条消息、最多 200 行（多相求解器一步可打印上千行）
+    const tag = `[OF ${run.runId}]`;
+    const sel = lines.length > 200 ? lines.slice(-200) : lines;
+    const msg = JSON.stringify({ type: 'term', line: sel.map(l => `${tag} ${l}`).join('\n') });
+    for (const c of allClients) if (c.readyState === 1) c.send(msg);
+  }
+}
+// 求解健康监视：dt 崩塌 / NaN → 先 stopAt writeNow 写出发散前场（供诊断）再终止，避免在 1e-100 的 dt 上空耗几小时
+function _healthCheck(run, lines) {
+  if (run._health) return;
+  const h = run._hl || (run._hl = {});
+  const why = FoamPost.detectDivergence(h, lines);
+  if (!why) return;
+  run._health = { reason: why, time: h.t, at: Date.now() };
+  const note = `[NF_HEALTH] ⚠ 发散自动处置 @Time=${h.t}：${why}。已设 stopAt writeNow 写出当前场并停止（不再空耗算力）。下一步：foam_locate({case_path}) 定位发散单元和最近 patch，再对症修。`;
+  lines.push(note);
+  const cd = path.join(run.casePath, 'system', 'controlDict');
+  try {
+    const txt = fssync.readFileSync(cd, 'utf8');
+    run._ctrlBackup = txt;
+    const nt = /^\s*stopAt\s+\w+\s*;/m.test(txt) ? txt.replace(/^(\s*stopAt\s+)\w+(\s*;)/m, '$1writeNow$2') : txt.replace(/(\n\s*endTime)/, '\nstopAt          writeNow;$1');
+    fssync.writeFileSync(cd, nt);
+  } catch {}
+  setTimeout(() => { if (!run.ended) { killRunTree(run); setTimeout(() => { if (!run.ended) killRunTree(run, true); }, 5000); } }, 180_000);
+  Fidelity.recordLesson({ kind: 'divergence', case: run.casePath, time: h.t, detail: why, command: String(run.command).slice(0, 160) }).catch(() => {});
+}
+
+// 串行化读取：定时 tick 与收尾 drain 不会并发读同一偏移
+async function _tailFile(run, file, offKey) {
+  let fh;
+  try {
+    fh = await fs.open(file, 'r');
+    const { size } = await fh.stat();
+    if (size < (run[offKey] || 0)) run[offKey] = 0;
+    const avail = size - (run[offKey] || 0);
+    if (avail <= 0) return;
+    const len = Math.min(avail, 4 << 20);
+    const buf = Buffer.alloc(len);
+    await fh.read(buf, 0, len, run[offKey] || 0);
+    // 只消费到最后一个换行，避免把 UTF-8 多字节字符或半行切开
+    let take = buf.lastIndexOf(10) + 1;
+    if (take === 0) { if (len < (4 << 20) && !run._draining) return; take = len; }
+    run[offKey] = (run[offKey] || 0) + take;
+    _pushRunLines(run, buf.subarray(0, take).toString('utf8'));
+  } catch {} finally { if (fh) await fh.close().catch(() => {}); }
+}
+// 命令自带 `> log.xxx` 重定向时，求解输出不进跟踪日志：解析出目标文件，一起跟踪（健康监视 / solver_wait 正则才看得到）
+function _redirectTarget(command, casePath) {
+  const m = String(command || '').match(/(?:^|[^0-9&])>{1,2}\s*([^\s;&|<>]+)/);
+  if (!m || /^\/dev\//.test(m[1])) return '';
+  return path.isAbsolute(m[1]) ? m[1] : path.join(casePath || '', m[1]);
+}
+// 作业脚本内部自己重定向（如 ./Allcold 里 mpirun … > log.cold）时，命令行里解析不出目标，跟踪日志是空的：
+// 在作业进程树里找求解器 stdout 指向的文件一起跟踪（监视卡、健康监视、solver_wait 才看得到 Time）
+function _adoptTreeLog(run) {
+  if (process.platform !== 'linux' || run.external || run.ended || !run.pid) return;
+  if ((run.redirLog && !run._autoLog) || (run._lastTime && !run._autoLog)) return;
+  if (Date.now() - (run._treeLogAt || 0) < (run._autoLog ? 30_000 : 10_000)) return;
+  run._treeLogAt = Date.now();
+  try {
+    const f = ExtRuns.findTreeLog(run.pid, ExtRuns.readProcTable(), run.logFile);
+    if (!f || f === run.redirLog) return;
+    const size = fssync.statSync(f).size;
+    run.redirLog = f; run._autoLog = true; run._roff = size > (2 << 20) ? size - (2 << 20) : 0;
+    console.log(`[runs] ${run.runId} 求解输出在脚本内重定向到 ${f}，已一起跟踪`);
+    _persistRuns();
+  } catch (e) { console.warn('[runs] 查找脚本内日志失败:', e.message); }
+}
+function _tailOnce(run) {
+  run._chain = (run._chain || Promise.resolve()).then(async () => {
+    _adoptTreeLog(run);
+    await _tailFile(run, run.logFile, '_off');
+    if (run.redirLog) await _tailFile(run, run.redirLog, '_roff');
+  });
+  return run._chain;
+}
+async function _finishRun(run, code) {
+  if (run.ended) return;
+  clearInterval(run._tail); clearInterval(run._alive);
+  run._draining = true;
+  await _tailOnce(run); await _tailOnce(run);
+  run.ended = Date.now();
+  run.exitCode = run._markExit != null ? run._markExit : (code == null ? (run.external ? ExtRuns.inferExitFromLog(run.log) : null) : code);
+  if (run.exitCode !== 0 && run._markExit == null && !run._health && (_endedCleanly(run.log) || _endedCleanly(_redirectTail(run).split('\n')))) { run.rawExitCode = run.exitCode; run.exitCode = 0; run.endAbort = true; }
+  if (run._ctrlBackup) { try { fssync.writeFileSync(path.join(run.casePath, 'system', 'controlDict'), run._ctrlBackup); } catch {} run._ctrlBackup = null; }
+  for (const sub of run.subs) if (sub.readyState === 1) { try { sub.send(JSON.stringify({ type: 'solver_done', runId: run.runId, exitCode: run.exitCode })); } catch {} }
+  _persistRuns();
+  _solverEnded(run);
+  {
+    const ok = run.exitCode === 0;
+    const tail = (run.log || []).slice(-3).join('\n').slice(-400);
+    const mins = Math.round((run.ended - run.started) / 60000);
+    notifyEvent({ kind: 'solver_done', key: `solver:${run.runId}`, level: ok ? 'normal' : 'high', taskId: run.ownerTaskId,
+      title: `${ok ? '✅ 求解完成' : '⚠ 求解异常退出'} ${run.runId}（退出码 ${run.exitCode}）`,
+      body: `${_taskTitle(run.ownerTaskId) ? `任务：${_taskTitle(run.ownerTaskId)}\n` : ''}算例：${run.casePath}\n用时 ${mins} 分钟${tail ? `\n最后输出：\n${tail}` : ''}` });
+  }
+}
+function spawnTrackedRun({ kind, cd, command, inner, ws, session, broadcast }) {
+  if (!fssync.existsSync(cd)) throw new Error(`case_path 不存在: ${cd}`);
+  const runId = crypto.randomBytes(4).toString('hex');
+  const logFile = path.join(cd, `log.nullflux.${runId}`);
+  // 末行写退出码：重启接管后没有子进程句柄，只能从日志拿 exit code
+  let proc;
+  fssync.closeSync(fssync.openSync(logFile, 'a'));
+  if (IS_WIN) {
+    // Windows 下 detached 的 cmd 会丢孙进程的控制台输出 → 用 detached 的 node 守护进程再非 detached 地起 cmd
+    const runner = WIN_RUNNER_JS;
+    proc = spawn(process.execPath, ['-e', runner, logFile, cd, inner, EXIT_MARK], { cwd: cd, detached: true, stdio: 'ignore', windowsHide: true });
+  } else {
+    const fd = fssync.openSync(logFile, 'a');
+    try { proc = spawn('bash', ['-c', `${inner}\necho "${EXIT_MARK}$?"`], { cwd: cd, detached: true, stdio: ['ignore', fd, fd] }); }
+    finally { try { fssync.closeSync(fd); } catch {} }
+  }
+  proc.unref();
+  const run = { runId, kind, proc, pid: proc.pid, casePath: cd, command, logFile, log: [], started: Date.now(), ended: 0, exitCode: null,
+    subs: new Set(), ownerTaskId: (session && session.task && session.task.id) || null, broadcast: !!broadcast, _off: 0,
+    redirLog: _redirectTarget(command, cd), _roff: 0 };
+  SOLVER_RUNS.set(runId, run);
+  run._tail = setInterval(() => _tailOnce(run), 1000);
+  proc.on('exit', code => setTimeout(() => _finishRun(run, code), 300));
+  proc.on('error', err => { run.log.push('[启动失败] ' + err.message); _finishRun(run, -1); });
+  if (ws && !ws.isHeadless) run.subs.add(ws);
+  _persistRuns();
+  try {
+    const msg = JSON.stringify({ type: 'runs_update', reason: 'solver_started', runId });
+    for (const c of allClients) if (c.readyState === 1) c.send(msg);
+  } catch {}
+  try { broadcastTaskState(); } catch {}
+  return run;
+}
+function reattachRuns() {
+  let arr = [];
+  try { arr = JSON.parse(fssync.readFileSync(RUNS_INDEX, 'utf8')); } catch { return; }
+  let live = 0;
+  for (const m of Array.isArray(arr) ? arr : []) {
+    if (!m || !m.runId || SOLVER_RUNS.has(m.runId)) continue;
+    const run = { ...m, proc: null, log: [], subs: new Set(), reattached: true };
+    let size = 0; try { size = fssync.statSync(run.logFile).size; } catch {}
+    // 长算例日志可达 GB 级：只回放最后 2MB
+    run._off = Math.max(0, size - (2 << 20));
+    if (!run.redirLog && !run.external) run.redirLog = _redirectTarget(run.command, run.casePath);
+    if (run.redirLog) { let rs = 0; try { rs = fssync.statSync(run.redirLog).size; } catch {} run._roff = Math.max(0, rs - (2 << 20)); }
+    SOLVER_RUNS.set(run.runId, run);
+    if (run.ended) { run._reported = true; _tailOnce(run); continue; }
+    live++;
+    run._tail = setInterval(() => _tailOnce(run), 1000);
+    run._alive = setInterval(() => { if (!_pidAlive(run.pid)) _finishRun(run, null); }, 5000);
+    if (!_pidAlive(run.pid)) _finishRun(run, null);
+  }
+  if (live) console.log(`[runs] 重新接管 ${live} 个后台作业`);
+}
+
+// ── 接管手动启动的求解器（终端里直接 nohup mpirun ... 起的作业）：只读监视日志，结束时推送通知，不做发散自动处置 ──
+function _registerExternalRun(c) {
+  let cwd = '';
+  try { cwd = fssync.readlinkSync(`/proc/${c.pid}/cwd`); } catch { return null; }
+  const logFile = ExtRuns.resolveLog(c.pid, cwd);
+  const runId = 'x' + crypto.randomBytes(3).toString('hex');
+  const started = ExtRuns.processStartMs(c.starttime) || Date.now();
+  const run = { runId, kind: 'foam', pid: c.pid, casePath: cwd, command: c.argv.join(' ').slice(0, 500), logFile: logFile || '',
+    log: [], started, ended: 0, exitCode: null, subs: new Set(), ownerTaskId: null, broadcast: false, external: true, proc: null };
+  let size = 0; if (logFile) { try { size = fssync.statSync(logFile).size; } catch {} }
+  run._off = Math.max(0, size - (2 << 20));
+  SOLVER_RUNS.set(runId, run);
+  if (logFile) run._tail = setInterval(() => _tailOnce(run), 2000);
+  run._alive = setInterval(() => { if (!_pidAlive(run.pid)) _finishRun(run, null); }, 5000);
+  console.log(`[runs] 接管手动作业 ${runId}: ${c.solver} pid=${c.pid} case=${cwd} log=${logFile || '(未找到)'}`);
+  return run;
+}
+function scanExternalRuns() {
+  if (process.platform !== 'linux' || SETTINGS.adoptExternalRuns === false) return 0;
+  const tracked = new Set([process.pid]);
+  for (const r of SOLVER_RUNS.values()) if (!r.ended && r.pid) tracked.add(r.pid);
+  let n = 0;
+  for (const c of ExtRuns.pickCandidates(ExtRuns.readProcTable(), tracked)) {
+    try { if (_registerExternalRun(c)) n++; } catch (e) { console.warn('[runs] 接管失败', c.pid, e.message); }
+  }
+  if (n) {
+    _persistRuns();
+    try { const msg = JSON.stringify({ type: 'runs_update', reason: 'external_adopted' }); for (const cl of allClients) if (cl.readyState === 1) cl.send(msg); } catch {}
+    try { broadcastTaskState(); } catch {}
+  }
+  return n;
+}
+
+async function foamRunSolverAsync({ case_path, command }, ws, session) {
   if (!case_path) throw new Error('case_path 必填');
   if (!command) throw new Error('command 必填');
   const cd = path.isAbsolute(case_path) ? case_path : path.resolve(WORKSPACE, case_path);
-  const runId = crypto.randomBytes(4).toString('hex');
-  const isWin = IS_WIN;
-  let shell, shellArgs;
-  if (isWin && SETTINGS.openfoamBash) {
-    shell = 'cmd.exe'; shellArgs = ['/c', `call "${SETTINGS.openfoamBash}" && cd /d "${cd}" && ${command}`];
-  } else if (isWin) {
-    shell = 'cmd.exe'; shellArgs = ['/c', `cd /d "${cd}" && ${command}`];
+  let inner;
+  if (IS_WIN && SETTINGS.openfoamBash) {
+    inner = `call "${SETTINGS.openfoamBash}" && cd /d "${cd}" && ${command}`;
+  } else if (IS_WIN) {
+    inner = `cd /d "${cd}" && ${command}`;
   } else {
     let bashrc = SETTINGS.openfoamBash || '';
     if (!bashrc && SETTINGS.foamRoot) {
       const cand = path.join(SETTINGS.foamRoot, 'etc', 'bashrc');
       try { if ((await fs.stat(cand)).isFile()) bashrc = cand; } catch {}
     }
+    // 不能放子 shell 里 source（原来的 "(source ...)" 环境变量不会传给后面的求解器）
     const sourceLine = bashrc ? `source "${bashrc}"` : `source "$FOAM_BASH" 2>/dev/null || true`;
-    shell = 'bash'; shellArgs = ['-c', `cd "${cd}" && (${sourceLine}); ${command}`];
+    inner = `cd "${cd}" || exit 97; ${sourceLine}; ${command}`;
   }
-  const proc = spawn(shell, shellArgs, { cwd: cd });
-  const run = { runId, proc, casePath: cd, command, log: [], started: Date.now(), ended: 0, exitCode: null, subs: new Set() };
-  SOLVER_RUNS.set(runId, run);
-  const onData = d => {
-    const s = d.toString();
-    s.split(/\r?\n/).forEach(l => { if (l) { run.log.push(l); if (run.log.length > 4000) run.log.splice(0, run.log.length - 4000); } });
-    // 即时推送给订阅者
-    for (const sub of run.subs) if (sub.readyState === 1) {
-      sub.send(JSON.stringify({ type: 'solver_log', runId, lines: s.split(/\r?\n/).filter(Boolean) }));
-    }
-    // 也广播到所有连接的终端，方便用户在主终端里看到长任务的实时输出
-    try {
-      const tag = `[OF ${runId}]`;
-      const lines = s.split(/\r?\n/).filter(Boolean);
-      for (const l of lines) {
-        const msg = JSON.stringify({ type: 'term', line: `${tag} ${l}` });
-        for (const c of allClients) if (c.readyState === 1) c.send(msg);
-      }
-    } catch {}
-  };
-  // 限制单行长度，避免恶意/异常进程把单行刷成 GB
-  const MAX_LINE_CHARS = 2000;
-  const _origPush = run.log.push.bind(run.log);
-  run.log.push = function(line) { return _origPush(line.length > MAX_LINE_CHARS ? line.slice(0, MAX_LINE_CHARS) + ' …[行过长截断]' : line); };
-  proc.stdout.on('data', onData); proc.stderr.on('data', onData);
-  proc.on('close', code => { run.ended = Date.now(); run.exitCode = code;
-    for (const sub of run.subs) if (sub.readyState === 1) sub.send(JSON.stringify({ type: 'solver_done', runId, exitCode: code }));
-    try {
-      const msg = JSON.stringify({ type: 'runs_update', reason: 'solver_ended', runId });
-      for (const c of allClients) if (c.readyState === 1) c.send(msg);
-    } catch {}
-  });
-  proc.on('error', err => { run.ended = Date.now(); run.exitCode = -1; run.log.push('[启动失败] ' + err.message); });
-  if (ws) run.subs.add(ws);
-  // 启动时广播 runs_update
-  try {
-    const msg = JSON.stringify({ type: 'runs_update', reason: 'solver_started', runId });
-    for (const c of allClients) if (c.readyState === 1) c.send(msg);
-  } catch {}
-  return `[已启动求解器]\n  runId: ${runId}\n  case:  ${cd}\n  cmd:   ${command}\n请用前端"求解器监测"面板订阅 runId=${runId}，或调用 foam_solver_status(${runId}) 轮询。`;
+  const { runId } = spawnTrackedRun({ kind: 'foam', cd, command, inner, ws, session, broadcast: true });
+  return `[已启动求解器]\n  runId: ${runId}\n  case:  ${cd}\n  cmd:   ${command}\n下一步：所有工况都启动后，用一次 solver_wait({run_ids:[全部 runId], mode:"all", timeout_s:按预计时长}) 等到全部结束（求解器打印 End 后若收尾卡住会自动判结束；FATAL 会提前返回）。不要先做短时探测等待，也不要反复轮询。`;
 }
 
 function foamSolverStatus(runId) {
@@ -1340,6 +1937,7 @@ function foamSolverStatus(runId) {
     const m = lines[i].match(/^Time\s*=\s*([\d.eE+\-]+)/);
     if (m) { lastTime = m[1]; break; }
   }
+  lastTime = lastTime || run._lastTime || _redirectLastTime(run) || _demLastTime(lines);
   // 解析残差：Solving for X, Initial residual = 0.123, Final residual = 1e-7, No Iterations N
   const resLines = lines.filter(l => /Initial residual/.test(l)).slice(-20);
   const status = run.ended ? `已结束(exit=${run.exitCode})` : `运行中`;
@@ -1356,13 +1954,215 @@ function foamSolverStatus(runId) {
   ].join('\n');
 }
 
+// 重定向目标文件的最后 64 KB（没有重定向或读不到时返回空串）
+function _redirectTail(run) {
+  const f = run.redirLog || _redirectTarget(run.command, run.casePath);
+  if (!f) return '';
+  let fd;
+  try {
+    fd = fssync.openSync(f, 'r');
+    const size = fssync.fstatSync(fd).size, len = Math.min(size, 1 << 16);
+    const buf = Buffer.alloc(len); fssync.readSync(fd, buf, 0, len, size - len);
+    return buf.toString('utf8');
+  } catch { return ''; } finally { if (fd !== undefined) try { fssync.closeSync(fd); } catch {} }
+}
+// 命令自带重定向（`> log.smoke 2>&1`）时，跟踪日志里只有退出标记：从重定向目标文件尾部取最近的 Time
+function _redirectLastTime(run) {
+  const f = run.redirLog || _redirectTarget(run.command, run.casePath);
+  if (!f) return '';
+  let fd;
+  try {
+    fd = fssync.openSync(f, 'r');
+    const size = fssync.fstatSync(fd).size, len = Math.min(size, 1 << 20);
+    const buf = Buffer.alloc(len); fssync.readSync(fd, buf, 0, len, size - len);
+    const ms = buf.toString('utf8').match(/^Time\s*=\s*([\d.eE+\-]+)/gm);
+    return ms ? ms[ms.length - 1].replace(/^Time\s*=\s*/, '') : '';
+  } catch { return ''; } finally { if (fd !== undefined) try { fssync.closeSync(fd); } catch {} }
+}
+// 求解器在最后一个 "Time =" 之后打印了 End → 计算本身完成（twoPhaseEulerFoam v2306 等会在 End 后析构时 abort，exit=134）
+// LIGGGHTS/LAMMPS thermo：表头含 Time 列（"Step Time Atoms ..."），取最后一行数值行的 Time；没有 Time 列返回 ''
+function _demLastTime(lines) {
+  let row = null;
+  for (let i = lines.length - 1, n = 0; i >= 0 && n < 4000; i--, n++) {
+    const t = String(lines[i]).trim().split(/\s+/);
+    if (!row && t.length >= 2 && /^\d+$/.test(t[0]) && t.every(x => /^[-+]?[\d.]+(e[-+]?\d+)?$/i.test(x))) { row = t; continue; }
+    if (row && t[0] === 'Step') { const k = t.indexOf('Time'); return k > 0 && row.length === t.length ? row[k] : ''; }
+  }
+  return '';
+}
+function _endedCleanly(log) {
+  for (let i = log.length - 1; i >= 0; i--) {
+    const l = String(log[i]).replace(/^\[\d+\]\s*/, '').trim();
+    if (l === 'End') return true;
+    if (/^Time\s*=/.test(l)) return false;
+  }
+  return false;
+}
+function _runSummary(run, tailN) {
+  let lastTime = '';
+  for (let i = run.log.length - 1; i >= 0; i--) { const m = run.log[i].match(/^Time\s*=\s*([\d.eE+\-]+)/); if (m) { lastTime = m[1]; break; } }
+  lastTime = lastTime || run._lastTime || _redirectLastTime(run) || _demLastTime(run.log);
+  const dur = ((run.ended || Date.now()) - run.started) / 1000;
+  let st = run.ended ? `已结束 exit=${run.exitCode}` : '运行中';
+  if (run.endAbort) st += `（求解器已打印 End，原始退出码 ${run.rawExitCode} 来自 End 之后的析构/MPI 收尾，已按正常完成处理，结果有效，不要重算）`;
+  else if (run.ended && run.exitCode !== 0 && (_endedCleanly(run.log) || _endedCleanly(_redirectTail(run).split('\n')))) st += '（日志在最后一个时间步之后已打印 End：计算正常完成，非零退出来自 End 之后的析构/MPI 收尾，结果有效，不要重算）';
+  const hl = run._health ? `\n⚠ 健康监视判定发散 @Time=${run._health.time}：${run._health.reason}（已写出发散时刻场，controlDict 已自动恢复）` : '';
+  return `### ${run.runId} [${run.kind || 'foam'}] ${st} 用时=${dur.toFixed(0)}s Time=${lastTime || '?'}${hl}\ncase=${run.casePath}\n` + run.log.slice(-tailN).join('\n');
+}
+
+// 工作区内正在跑的求解器进程数（argv0 以 Foam 结尾，cwd 在 root 下）；仅 Linux
+// /proc 里 argv0 以 Foam 结尾的进程快照（pid, argv, cwd）；同一秒内多处调用共享一次扫描
+let _foamSnap = { t: 0, list: [] };
+function _foamProcSnapshot(maxAgeMs = 2000) {
+  if (Date.now() - _foamSnap.t < maxAgeMs) return _foamSnap.list;
+  const list = [];
+  try {
+    for (const d of fssync.readdirSync('/proc')) {
+      if (!/^\d+$/.test(d)) continue;
+      try {
+        const argv = fssync.readFileSync(`/proc/${d}/cmdline`, 'utf8').split('\0').filter(Boolean);
+        if (!argv.length || !/Foam$|^lmp_\w+$|^liggghts\w*$/.test(path.basename(argv[0]))) continue;
+        list.push({ pid: Number(d), argv, cwd: fssync.readlinkSync(`/proc/${d}/cwd`) });
+      } catch {}
+    }
+  } catch {}
+  _foamSnap = { t: Date.now(), list };
+  return list;
+}
+function _solversUnder(root, maxAgeMs) {
+  let n = 0;
+  for (const p of _foamProcSnapshot(maxAgeMs)) if (p.cwd === root || p.cwd.startsWith(root + path.sep)) n++;
+  return n;
+}
+// 可提前唤醒的 sleep：开始时工作区有求解器在跑、之后全部退出 → 立刻返回；中止/用户插话也立刻返回
+async function _wakeableSleep(ms, session) {
+  const root = path.resolve(WORKSPACE);
+  const had = _solversUnder(root);
+  const t0 = Date.now();
+  return await new Promise(resolve => {
+    const iv = setInterval(() => {
+      const left = ms - (Date.now() - t0);
+      if (left <= 0) { clearInterval(iv); return resolve({ woke: false, left: 0 }); }
+      if (session && session.aborted) { clearInterval(iv); return resolve({ woke: true, left, why: '已中止' }); }
+      if (session && Array.isArray(session._steerQueue) && session._steerQueue.length) { clearInterval(iv); return resolve({ woke: true, left, why: '用户插入了新消息' }); }
+      if (had > 0 && _solversUnder(root) === 0) { clearInterval(iv); return resolve({ woke: true, left, why: '工作区内求解器已全部退出' }); }
+    }, 5000);
+  });
+}
+
+async function solverWait(args, session) {
+  const ids = (args.run_ids || []).map(String);
+  const runs = ids.map(id => SOLVER_RUNS.get(id));
+  const unknown = ids.filter((id, i) => !runs[i]);
+  if (unknown.length) {
+    const avail = [...SOLVER_RUNS.values()].map(r => `${r.runId}${r.ended ? '(已结束)' : '(运行中)'} ${r.casePath}`).slice(-20).join('\n  ');
+    return `[solver_wait] 未知 runId: ${unknown.join(', ')}。可用：\n  ${avail || '(无)'}`;
+  }
+  const mode = args.mode === 'all' ? 'all' : 'any';
+  let tsec = Math.min(Math.max(Number(args.timeout_s) || 3600, 1), 43200);
+  // 短时探测（≤300 s 且无 until_regex）对已稳定运行的作业没有信息量，只烧一步：抬到 1800 s（FATAL / End 仍会提前返回）
+  let bumped = '';
+  if (tsec <= 300 && !args.until_regex && !args.allow_short && runs.every(r => !r.ended && (r._lastTime || r.log.some(l => /^Time\s*=/.test(l)) || _demLastTime(r.log)))) {
+    bumped = ` （timeout_s=${tsec} 太短，作业均已进入时间步，已自动延长到 1800 s；需要短等待请传 allow_short:true）`; tsec = 1800;
+  }
+  const timeoutMs = tsec * 1000;
+  const tailN = Math.min(Math.max(Number(args.tail_lines) || 15, 0), 200);
+  let re = null;
+  if (args.until_regex) { try { re = new RegExp(args.until_regex, 'm'); } catch (e) { return `[solver_wait] until_regex 非法: ${e.message}`; } }
+  // 求解器打印 End 后卡在析构/MPI 收尾（日志 60 s 不再增长）：计算已完成，按结束处理并收掉进程
+  const HANG_MS = Number(process.env.END_HANG_MS) || 60_000;
+  const settleHung = () => {
+    for (const r of runs) {
+      if (r.ended || r.external) continue;
+      const n = r._lineNo || 0;
+      if (n !== r._hangN) { r._hangN = n; r._hangT = Date.now(); continue; }
+      if (Date.now() - (r._hangT || Date.now()) < HANG_MS) continue;
+      if (!(_endedCleanly(r.log) || _endedCleanly(_redirectTail(r).split('\n')))) continue;
+      r._markExit = 0; r.endAbort = true; r.rawExitCode = 'hang'; r.log.push('[CFDriver] End 之后进程 60 s 无输出，判定计算已完成，回收残留进程');
+      try { killRunTree(r); setTimeout(() => { if (!r.ended) { killRunTree(r, true); setTimeout(() => { if (!r.ended) _finishRun(r, 0); }, 3000); } }, 3000); } catch {}
+    }
+  };
+  const fatal = () => runs.find(r => r.ended && r.exitCode !== 0 && r.exitCode != null);
+  const done = () => mode === 'all' ? (runs.every(r => r.ended) || !!fatal()) : runs.some(r => r.ended);
+  const why2 = () => (mode === 'all' && fatal() && !runs.every(r => r.ended)) ? `failed(${fatal().runId})` : 'ended';
+  const t0 = Date.now();
+  const cursors = runs.map(r => r._lineNo || 0);
+  let why = done() ? 'already_ended' : '';
+  if (why) for (const r of runs) if (r.ended) r._reported = true;
+  if (!why) {
+    why = await new Promise(resolve => {
+      let iv = null, to = null;
+      // agent 已亲眼看到结果 → 标记 _reported，避免再触发自动唤醒（emit 同步调用本回调，先于 _scheduleWake）
+      const finish = (w) => { clearInterval(iv); clearTimeout(to); SOLVER_EVENTS.off('ended', onEnd); for (const r of runs) if (r.ended) r._reported = true; resolve(w); };
+      // mode=all 时其中一个先结束：它的结果本次 solver_wait 返回时就会带上，标记 _reported，
+      // 免得自动唤醒往引导队列里塞一条"作业结束"把整个等待提前打断（emit 同步调用，先于 _scheduleWake）
+      const onEnd = (id) => {
+        if (!ids.includes(id)) return;
+        if (done()) return finish(why2());
+        const r = SOLVER_RUNS.get(id); if (r) r._reported = true;
+      };
+      SOLVER_EVENTS.on('ended', onEnd);
+      to = setTimeout(() => finish('timeout'), timeoutMs);
+      iv = setInterval(() => {
+        if (session.aborted) return finish('aborted');
+        if (done()) return finish(why2());
+        // 只有用户本人的引导才打断等待；系统生成的"作业结束"通知不打断 mode=all（结果会一并返回）
+        if (Array.isArray(session._steerQueue) && session._steerQueue.some(q => !q.system)) return finish('steer');
+        settleHung();
+        if (!re) return;
+        for (let k = 0; k < runs.length; k++) {
+          const r = runs[k], log = r.log, total = r._lineNo || 0;
+          // 用绝对行号游标：log 被截到 4000 行后下标会平移，按 total-log.length 换算，不重复也不漏扫
+          const base = total - log.length;
+          const from = Math.max(0, cursors[k] - base);
+          for (let i = from; i < log.length; i++) if (re.test(log[i])) { cursors[k] = base + i + 1; return finish(`matched(${r.runId}): ${log[i].slice(0, 160)}`); }
+          cursors[k] = total;
+        }
+      }, 1000);
+    });
+  }
+  const waited = ((Date.now() - t0) / 1000).toFixed(0);
+  const left = runs.filter(r => !r.ended).map(r => r.runId);
+  const hint = left.length && why !== 'steer' && why !== 'aborted' ? `\n仍在运行: ${left.join(', ')}${why.startsWith('failed') ? '（有作业失败，先诊断它；其余作业不受影响，不要停掉）' : ''}` : '';
+  return `[solver_wait] reason=${why} waited=${waited}s mode=${mode}${bumped}${hint}\n` + runs.map(r => _runSummary(r, tailN)).join('\n\n');
+}
+
 function foamSolverStop(runId) {
   const run = SOLVER_RUNS.get(runId);
   if (!run) return '[未知 runId]';
   if (run.ended) return '[已结束]';
-  try { run.proc.kill('SIGTERM'); } catch {}
-  setTimeout(() => { try { run.proc.kill('SIGKILL'); } catch {} }, 3000);
+  run._userStopped = true; killRunTree(run);
+  setTimeout(() => { if (!run.ended) killRunTree(run, true); }, 3000);
   return `[已发送终止信号 runId=${runId}]`;
+}
+// 启动后最多等 EARLY_WAIT_S（默认 25 s）：进入时间步 / 提前失败 / 仍在初始化，三种情况直接告诉智能体，免去短时探测等待
+async function _earlyStatus(startedMsg, session) {
+  const m = /runId:\s*(\w+)/.exec(startedMsg || '');
+  const run = m && SOLVER_RUNS.get(m[1]);
+  if (!run) return '';
+  const lim = (Number(process.env.EARLY_WAIT_S) || 25) * 1000, t0 = Date.now();
+  const stepped = () => run.log.some(l => /^Time\s*=/.test(l)) || !!run._lastTime || !!_redirectLastTime(run) || !!_demLastTime(run.log);
+  while (Date.now() - t0 < lim && !run.ended && !stepped() && !(session && session.aborted)) await new Promise(r => setTimeout(r, 1000));
+  const s = ((Date.now() - t0) / 1000).toFixed(0);
+  if (run.ended) run._seenEnded = true;
+  if (run.ended) return `\n[启动检查 ${s}s] ⚠ 作业已退出 exit=${run.exitCode}，日志尾：\n${run.log.slice(-25).join('\n')}`;
+  if (stepped()) return `\n[启动检查 ${s}s] ✓ 已进入时间步（Time=${run._lastTime || _redirectLastTime(run) || _demLastTime(run.log) || '?'}），运行正常。`;
+  return `\n[启动检查 ${s}s] 仍在初始化（尚未出现 Time =），未见报错。`;
+}
+// 智能体用：发信号后等到作业确实结束、算例目录下没有残留求解器进程再返回，省掉 pgrep/ps 自查
+async function foamSolverStopWait(runId) {
+  const msg = foamSolverStop(runId);
+  const run = SOLVER_RUNS.get(runId);
+  if (!run) return msg;
+  const t0 = Date.now();
+  while (Date.now() - t0 < 20000) {
+    const left = process.platform === 'linux' ? _solversUnder(run.casePath, 0) : 0;
+    if (run.ended && left === 0) return `${msg}\n[已确认] 作业已结束，算例目录下无残留求解器进程（${((Date.now() - t0) / 1000).toFixed(1)} s）。可直接修改并重新启动。`;
+    if (Date.now() - t0 > 6000 && left > 0) killRunTree(run, true);
+    await new Promise(r => setTimeout(r, 500));
+  }
+  const left = process.platform === 'linux' ? _solversUnder(run.casePath, 0) : 0;
+  return `${msg}\n[注意] 20 s 后仍有 ${left} 个求解器进程在 ${run.casePath} 下（ended=${!!run.ended}）。`;
 }
 
 // ====================== 进度估算（求解器 Time / snappyHexMesh 阶段） ======================
@@ -1381,7 +2181,7 @@ function _classifyFoamCommand(cmd) {
   const s = String(cmd || '').toLowerCase();
   if (/snappyhexmesh/.test(s)) return 'snappy';
   if (/blockmesh|surfacefeature|extrudemesh|topo/.test(s)) return 'mesher';
-  if (/foam$|simple|pimple|piso|ico|inter|rho|chthsf|laplacian|scalartransport|reactingfoam|interisofoam|dnsfoam|sonicfoam|buoyant/.test(s)) return 'solver';
+  if (/foam$|simple|pimple|piso|ico|inter|rho|chthsf|laplacian|scalartransport|reactingfoam|interisofoam|dnsfoam|sonicfoam|buoyant|lmp_|liggghts/.test(s)) return 'solver';
   return 'other';
 }
 
@@ -2477,7 +3277,8 @@ async function _foamExecCapture(command, timeoutMs = 30000) {
       try { if ((await fs.stat(cand)).isFile()) bashrc = cand; } catch {}
     }
     const sourceLine = bashrc ? `source "${bashrc}"` : `source "$FOAM_BASH" 2>/dev/null || true`;
-    shell = 'bash'; shellArgs = ['-c', `(${sourceLine}) >/dev/null 2>&1; ${command}`];
+    // 在同一个 shell 里 source（原来放在 ( ) 子 shell 里，环境变量出了括号就没了，命令仍然找不到）
+    shell = 'bash'; shellArgs = ['-c', `${sourceLine} >/dev/null 2>&1; ${command}`];
   }
   return await new Promise((resolve) => {
     let out = '', err = '', done = false;
@@ -2746,13 +3547,46 @@ async function _foamDictSet(absFile, entry, value) {
   });
 }
 
+async function foamPostprocList(args) {
+  const cd = path.isAbsolute(args.case_path) ? args.case_path : path.resolve(WORKSPACE, args.case_path);
+  const fos = await FoamPost.listFunctionObjects(cd);
+  if (!fos.length) return `[foam_postproc_list] ${cd}/postProcessing 不存在或为空。先在 system/controlDict 的 functions{} 里加 functionObject（surfaceFieldValue / volFieldValue / probes / forces）再跑求解器。`;
+  return `[foam_postproc_list] case=${cd}\n` + fos.map(f => `- ${f.name}  start_times=[${f.start_times.join(', ')}]  files=[${f.files.join(', ')}]`).join('\n');
+}
+
+async function foamPostprocStats(args) {
+  const cd = path.isAbsolute(args.case_path) ? args.case_path : path.resolve(WORKSPACE, args.case_path);
+  const { file, series } = await FoamPost.loadFunctionObject(cd, args.function_object, args.file || null);
+  const r = FoamPost.windowStats(series, {
+    tStart: args.t_start ?? null, tEnd: args.t_end ?? null,
+    lastFraction: args.last_fraction ?? null, columns: args.columns || null, driftTol: args.drift_tol ?? 0.05,
+  });
+  const span = series.time.length ? [series.time[0], series.time[series.time.length - 1]] : null;
+  const lines = [`[foam_postproc_stats] ${args.function_object}/${file}  samples=${series.time.length}  t∈[${span}]  window=[${r.window}] n=${r.n}`];
+  for (const [c, s] of Object.entries(r.stats)) {
+    if (!s.n) { lines.push(`  ${c}: 无数据`); continue; }
+    lines.push(`  ${c}: mean=${s.mean.toPrecision(6)} ±sem=${s.sem.toPrecision(3)} std=${s.std.toPrecision(3)} drift=${s.rel_drift.toFixed(3)} ${s.stationary ? '✅平稳' : '⚠未平稳'}`);
+  }
+  const full = { file, columns: series.columns, span, ...r };
+  if (args.write_json) {
+    const out = path.isAbsolute(args.write_json) ? args.write_json : path.resolve(cd, args.write_json);
+    await fs.writeFile(out, JSON.stringify(full, null, 1));
+    lines.push(`已写出完整统计 → ${out}`);
+  }
+  // 文本行已含每列 mean/sem/std/drift；完整 JSON 只在列少时附上（宽表重复一遍会翻倍 token）
+  const js = JSON.stringify(full);
+  return lines.join('\n') + (args.json === true || (args.json !== false && js.length <= 2500) ? `\nJSON:\n${js}` : `\n（完整 JSON ${js.length} 字符已省略；需要时传 json:true 或 write_json:"stats.json"）`);
+}
+
 async function optStudyCreate(args) {
   if (!args.study_id) throw new Error('study_id 必填');
   if (!Array.isArray(args.search_space) || args.search_space.length === 0) throw new Error('search_space 必填且至少一项');
   if (!args.objective || !args.objective.name) throw new Error('objective.name 必填');
+  if (!['minimize', 'maximize'].includes(args.objective.direction || 'minimize')) throw new Error('Invalid objective.direction');
+  if (!args.base_case || !args.pipeline) throw new Error('base_case and locked pipeline required');
   const spec = {
     study_id: args.study_id,
-    base_case: args.base_case || null,
+    base_case: path.resolve(WORKSPACE, args.base_case),
     objective: {
       name: args.objective.name,
       direction: args.objective.direction === 'maximize' ? 'maximize' : 'minimize',
@@ -2765,6 +3599,7 @@ async function optStudyCreate(args) {
     seed: args.seed ?? null,
     kpi_extract: args.kpi_extract || null,     // 可选缺省 KPI 提取配置（method, regex/script_path/pvpython）
     param_mapping: args.param_mapping || null, // 可选缺省字典映射
+    pipeline: args.pipeline,
     notes: args.notes || '',
   };
   const r = await _runOptDriver(['create', '--study_id', args.study_id, '--base_dir', OPT_BASE_DIR, '--spec', JSON.stringify(spec)]);
@@ -2778,6 +3613,27 @@ async function optSuggestNext(args) {
   if (!args.study_id) throw new Error('study_id 必填');
   const r = await _runOptDriver(['suggest', '--study_id', args.study_id, '--base_dir', OPT_BASE_DIR]);
   return `[opt_suggest_next] trial_id=${r.trial_id}\nparams=${JSON.stringify(r.params, null, 2)}\nsuggested trial dir name: ${r.trial_dir_suggested}\nJSON:\n${JSON.stringify(r, null, 2)}`;
+}
+
+let activeOptTrial = null;
+
+async function optRunTrial(args) {
+  if (!/^[A-Za-z0-9_-]+$/.test(args.study_id || '') || !Number.isSafeInteger(args.trial_id) || args.trial_id < 0) throw new Error('Invalid study/trial identity');
+  if (activeOptTrial || [...SOLVER_RUNS.values()].some(run => !run.ended)) throw new Error('CFD pipeline requires exclusive solver capacity; wait for active jobs');
+  activeOptTrial = `${args.study_id}/${args.trial_id}`;
+  try {
+  const status = await _runOptDriver(['status', '--study_id', args.study_id, '--base_dir', OPT_BASE_DIR]);
+  const trial = status.history.find(item => item.trial_id === args.trial_id && item.state === 'RUNNING');
+  if (!trial) throw new Error('Trial must exist and be RUNNING');
+  const spec = JSON.parse(await fs.readFile(path.join(OPT_BASE_DIR, args.study_id, 'study.json'), 'utf8'));
+  if (!spec.pipeline) throw new Error('Study pipeline required; create a new locked study');
+  const { runCfdTrial } = await import('./cfd_trial.js');
+  const trialDir = path.resolve(OPT_BASE_DIR, args.study_id, 'trials', `trial_${String(args.trial_id).padStart(4, '0')}`);
+  const result = await runCfdTrial({ baseCase: spec.base_case, trialDir, studyId: args.study_id, trialId: String(args.trial_id), params: trial.params, ...spec.pipeline });
+  return JSON.stringify({ passed: result.passed, value: result.value, error: result.error, evidence_path: path.join(trialDir, 'trial-result.json'), stages: result.stages.map(stage => ({ name: stage.name, status: stage.status })) });
+  } finally {
+    activeOptTrial = null;
+  }
 }
 
 async function optApplyParams(args) {
@@ -2809,12 +3665,22 @@ async function optApplyParams(args) {
 }
 
 async function optExtractKpi(args) {
+  const { parseKpiOutput } = await import('./opt_validation.js');
   if (!args.case_path) throw new Error('case_path 必填');
-  if (!args.method) throw new Error('method 必填: regex|pvpython|script');
+  if (!args.method) throw new Error('method 必填: regex|pvpython|script|postproc');
   const cd = path.isAbsolute(args.case_path) ? args.case_path : path.resolve(WORKSPACE, args.case_path);
   let value = null;
   let detail = '';
-  if (args.method === 'regex') {
+  if (args.method === 'postproc') {
+    if (!args.function_object || !args.column) throw new Error('postproc 方法需 function_object 和 column');
+    const { file, series } = await FoamPost.loadFunctionObject(cd, args.function_object, args.file || null);
+    const r = FoamPost.windowStats(series, { tStart: args.t_start ?? null, tEnd: args.t_end ?? null, lastFraction: args.last_fraction ?? (args.t_start == null ? 0.4 : null), columns: [args.column] });
+    const st = r.stats[args.column];
+    if (!st || !st.n) throw new Error(`列 ${args.column} 在窗口内无数据。可用列: ${series.columns.join(', ')}`);
+    if (!st.stationary && !args.allow_nonstationary) throw new Error(`窗口 [${r.window}] 内 ${args.column} 未平稳 (rel_drift=${st.rel_drift.toFixed(3)}, n=${st.n})。请继续推进物理时间后再取，或 allow_nonstationary=true 显式接受。`);
+    value = st.mean;
+    detail = `postproc ${args.function_object}/${file} ${args.column} 时均=${st.mean} ±${st.sem} (std=${st.std}, n=${st.n}, window=[${r.window}], rel_drift=${st.rel_drift.toFixed(3)})`;
+  } else if (args.method === 'regex') {
     if (!args.file || !args.pattern) throw new Error('regex 方法需 file 和 pattern');
     const abs = path.isAbsolute(args.file) ? args.file : path.join(cd, args.file);
     const txt = await fs.readFile(abs, 'utf-8');
@@ -2843,11 +3709,7 @@ async function optExtractKpi(args) {
     if (!r.ok) throw new Error(`${args.method} 退出码 ${r.code}: ${(r.err||'').slice(-300)}`);
     // 取 stdout 最后一行（脚本约定：最后一行打印数字，或 JSON {"kpi": <num>}）
     const last = (r.out || '').trim().split(/\r?\n/).filter(Boolean).pop() || '';
-    try {
-      const j = JSON.parse(last);
-      value = (typeof j === 'number') ? j : (j && typeof j.kpi === 'number' ? j.kpi : null);
-    } catch { value = parseFloat(last); }
-    if (!isFinite(value)) throw new Error(`脚本最后一行无法解析为数字: "${last}"`);
+    value = parseKpiOutput(r.out);
     detail = `${args.method} stdout 末行: ${last}`;
   } else {
     throw new Error('未知 method: ' + args.method);
@@ -2864,6 +3726,7 @@ async function optRecordResult(args) {
     '--trial_id', String(args.trial_id),
     '--state', args.state || 'COMPLETE'];
   if (args.value !== undefined && args.value !== null) driverArgs.push('--value', String(args.value));
+  if (args.evidence_path) driverArgs.push('--evidence', path.resolve(WORKSPACE, args.evidence_path));
   const r = await _runOptDriver(driverArgs);
   let txt = `[opt_record_result] trial=${args.trial_id} state=${r.state} value=${r.value}\nn_done=${r.n_done}`;
   if (r.best) txt += `\nbest so far: trial=${r.best.trial_id} value=${r.best.value}\nparams=${JSON.stringify(r.best.params)}`;
@@ -3405,8 +4268,10 @@ function recordToolResult(session, name, ok) {
 }
 function checkWatchdog(session) {
   const rs = _ensureRunState(session);
-  if (rs.startedAt && (Date.now() - rs.startedAt) > WATCHDOG.maxRunMs) {
-    return { stop: true, reason: `Run 运行已超过 ${(WATCHDOG.maxRunMs/3600000).toFixed(1)} 小时硬上限` };
+  // 长算例（3D 流化床动辄数天）可在 settings.json 用 maxRunHours 放开；默认 6 小时
+  const capMs = Number(SETTINGS.maxRunHours) > 0 ? Number(SETTINGS.maxRunHours) * 3600_000 : WATCHDOG.maxRunMs;
+  if (rs.startedAt && (Date.now() - rs.startedAt) > capMs) {
+    return { stop: true, reason: `Run 运行已超过 ${(capMs/3600000).toFixed(1)} 小时硬上限（settings.maxRunHours）` };
   }
   for (const [k, v] of Object.entries(rs.failCount || {})) {
     if (v >= WATCHDOG.maxFailPerTool) return { stop: true, reason: `工具 ${k} 连续失败 ${v} 次，已熔断` };
@@ -3414,12 +4279,30 @@ function checkWatchdog(session) {
   return { stop: false };
 }
 
+// 从 VLM 回答里取第一个能解析的 JSON 对象（回答前面可能有 "[vision_analyze · 1 张图 …]" 标头、后面可能有说明）
+function _firstJsonObject(s) {
+  for (let i = s.indexOf('{'); i >= 0; i = s.indexOf('{', i + 1)) {
+    let depth = 0, inStr = false, esc = false;
+    for (let j = i; j < s.length; j++) {
+      const c = s[j];
+      if (inStr) { if (esc) esc = false; else if (c === '\\') esc = true; else if (c === '"') inStr = false; continue; }
+      if (c === '"') inStr = true;
+      else if (c === '{') depth++;
+      else if (c === '}' && --depth === 0) {
+        const cand = s.slice(i, j + 1);
+        try { JSON.parse(cand); return [cand]; } catch { break; }
+      }
+    }
+  }
+  return null;
+}
 // 4) 通用视觉 Verifier（统一 JSON 返回）
 async function genericVisionVerify(stage, prompt, imagePaths, expected) {
-  if (!imagePaths || !imagePaths.length) return { passed: false, score: 0, reasons: ['无渲染图可供验证'], suggestions: ['先渲染后再校验'] };
+  // 没有图 = 没法验，不是"验证失败"：passed=null 不进 verifier 硬门，否则会把正确结果拦在收尾前
+  if (!imagePaths || !imagePaths.length) return { passed: null, score: 0, reasons: ['无渲染图可供验证（未验证，不算失败）'], suggestions: ['先渲染出图（或用 Cl/残差等数值核验）后再校验'] };
   const q = `【${stage} 验证】\n${prompt || ''}\n${expected ? '\n期望特征：' + expected : ''}\n\n请严格按以下 JSON 格式输出（且只输出 JSON，不要任何额外文字）：\n{"passed": true|false, "score": 0~100, "reasons": ["..."], "suggestions": ["..."]}`;
   const ans = await visionAnalyze(imagePaths.slice(0, 4), q, 800);
-  const m = String(ans).match(/\{[\s\S]*\}/);
+  const m = _firstJsonObject(String(ans));
   if (!m) return { passed: false, score: 0, reasons: ['VLM 输出非 JSON'], suggestions: [], raw: String(ans).slice(0, 400) };
   try { const j = JSON.parse(m[0]); return { passed: !!j.passed, score: +j.score || 0, reasons: j.reasons || [], suggestions: j.suggestions || [], raw: m[0] }; }
   catch (e) { return { passed: false, score: 0, reasons: ['JSON 解析失败: ' + e.message], suggestions: [], raw: m[0] }; }
@@ -3483,6 +4366,79 @@ async function readWithVisionFallback(kind, args, session, baseFn) {
 }
 // ====================== v0.6.0 模块结束 ======================
 
+// 论文复现保真度门：重大偏离未经用户批准 → 拦截求解/收尾
+// 命令要占多少核：mpirun 后面的 -np / -n N；命令是脚本（./Allrun、bash run.sh）时读脚本里的 mpirun -np N 或 -np $NP
+const _MPI_NP_RE = /mpi(?:run|exec)\b[^\n;|&]*?\s-{1,2}np?\s+(?:(\d+)|\$\{?(\w+)\}?)/g;
+const _MPI_LAUNCH_RE = /(?:^|[\s;&(])mpi(?:run|exec)\s/;
+function _npOf(command, cwd) {
+  const text = String(command || '');
+  const direct = /(?:^|[\s;&(])mpi(?:run|exec)(?=\s)[^\n;|&]*?\s-{1,2}np?\s+(\d+)/.exec(text);  // 只认命令位置的 mpirun
+  if (direct) return +direct[1];
+  const sm = /(?:^|[;&(])\s*(?:(?:bash|sh|nohup|time)\s+)*((?:\.{0,2}\/)?[\w./-]*(?:All\w*|\.sh))(?=[\s;&)]|$)/.exec(text);
+  if (!sm) return 1;
+  try {
+    const base = String(cwd || '').replace(/^~(?=\/)/, os.homedir());
+    const body = fssync.readFileSync(path.isAbsolute(sm[1]) ? sm[1] : path.resolve(WORKSPACE, base, sm[1]), 'utf8').slice(0, 200_000);
+    let best = 1;
+    for (const m of body.matchAll(_MPI_NP_RE)) {
+      const def = m[2] ? new RegExp('^\\s*(?:export\\s+)?' + m[2] + '=["\']?(\\d+)', 'm').exec(body) : null;
+      const v = m[1] ? +m[1] : def ? +def[1] : 0;
+      if (v > best) best = v;
+    }
+    return best;
+  } catch (e) { return 1; }
+}
+// 新作业 -np + 在跑的 MPI 求解进程数 > 核数 → 拒绝（超订会让两个作业都变慢数倍）
+function _cpuOversubscribed(command, allow, cwd) {
+  if (activeOptTrial) return `[CPU 守卫] CFD pipeline ${activeOptTrial} 正在独占求解资源，请等待流水线结束。`;
+  if (allow || SETTINGS.cpuGuard === false) return '';
+  const want = _npOf(command, cwd);
+  let busy = 0, jobs = [];
+  for (const r of SOLVER_RUNS.values()) {
+    if (r.ended) continue;
+    const n = _npOf(r.command, r.casePath);
+    busy += n; jobs.push(`${r.runId}(${n}核)`);
+  }
+  // 本服务没登记的求解器（别的任务 / RSI / 手动 mpirun）也占核：/proc 里实际在跑的 Foam 进程数取较大者
+  if (process.platform === 'linux') {
+    const real = _foamProcSnapshot(2000).length;
+    if (real > busy) { jobs.push(`未登记求解进程 ${real - busy} 个`); busy = real; }
+  }
+  const cores = Number(SETTINGS.maxCores) || (os.availableParallelism?.() ?? os.cpus().length);
+  if (!busy || busy + want <= cores) return '';
+  return `[CPU 守卫] ⛔ 拒绝启动：本机 ${cores} 核，已在跑 ${jobs.join(', ')} 共 ${busy} 核，新作业 -np ${want} → 超订 ${busy + want}/${cores}，两个作业都会变慢数倍。` +
+    `\n选项：① solver_wait 等现有作业结束后再跑；② 把新作业 -np 降到 ≤${Math.max(1, cores - busy)}；③ 冒烟/诊断可复制算例到 /tmp 用剩余核跑。确属必要再传 allow_oversubscribe=true。`;
+}
+
+// 运行中算例的 system/constant 字典会被 runTimeModifiable 重读，写错一个 functionObject 就带崩整个长跑
+function _liveCaseEditGuard(target, isCmd, allow) {
+  if (allow || SETTINGS.liveEditGuard === false) return '';
+  const t = String(target || '').replace(/^~(?=\/)/, os.homedir());
+  for (const r of SOLVER_RUNS.values()) {
+    if (r.ended || !r.casePath) continue;
+    const cp = r.casePath.replace(/\/+$/, '');
+    let hit = false;
+    if (!isCmd) hit = /^(system|constant)\//.test(path.relative(cp, path.resolve(t)).replace(/\\/g, '/'));
+    else {
+      const inCase = t.includes(cp) || new RegExp(`cd\\s+["']?${cp.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`).test(t);
+      hit = inCase && /(>>?\s*["']?(\S*\/)?(system|constant)\/|sed\s+-i[^;&|]*\s(\S*\/)?(system|constant)\/|foamDictionary[^;&|]*\s(\S*\/)?(system|constant)\/[^;&|]*-(set|add|remove)|(cp|mv)\s[^;&|]*\s(\S*\/)?(system|constant)\/)/.test(t);
+    }
+    if (hit) return `[运行中算例保护] ⛔ ${r.runId} 正在 ${cp} 求解；改它的 system/ 或 constant/ 会被 runTimeModifiable 立即重读，写错一处（如 functionObject 字段名）就会带崩整个长跑。` +
+      `\n做法：① 新 functionObject 先复制算例到 /tmp 用 postProcess -func / 短跑验证；② 能后处理补算的（截面通量等）用 postProcess -time 对已写出时刻算，不改运行中字典；③ 确需改运行中字典（如 endTime），先在临时文件写好并验证，再传 allow_live_edit=true 一次性 mv 替换。`;
+  }
+  return '';
+}
+
+async function _fidelityGate(session, casePath, action) {
+  try {
+    const cd = casePath ? (path.isAbsolute(casePath) ? casePath : path.resolve(WORKSPACE, casePath)) : '';
+    const added = await Fidelity.scanCase(session, cd, session._pendingUserText || '');
+    const msg = Fidelity.gateMessage(session, action);
+    if (msg && added.length) persistSession(session, true);
+    return msg;
+  } catch (e) { console.warn('[fidelity]', e.message); return ''; }
+}
+
 async function execTool(name, args, session, ws) {
   // v6.0.1: 先做参数名别名归位，避免模型发错 key 被当成 schema 错误冲起 watchdog
   args = normalizeToolArgs(args, name);
@@ -3533,6 +4489,8 @@ async function execTool(name, args, session, ws) {
     }
     case 'write_file': {
       const f = safePath(args.path);
+      // 新建文件不会被求解器读到（未被 include），只拦覆盖已有字典
+      if (fssync.existsSync(f)) { const g = _liveCaseEditGuard(f, false, args.allow_live_edit); if (g) return g; }
       let oldContent = null; try { oldContent = await fs.readFile(f, 'utf8'); } catch {}
       // V8 招1：写之前 snapshot
       const stepN = gitStep();
@@ -3546,11 +4504,12 @@ async function execTool(name, args, session, ws) {
     }
     case 'edit_file': {
       const f = safePath(args.path);
+      { const g = _liveCaseEditGuard(f, false, args.allow_live_edit); if (g) return g; }
       const orig = await fs.readFile(f, 'utf8');
-      const idx = orig.indexOf(args.old_str);
-      if (idx === -1) return `错误：未找到 old_str`;
-      if (orig.indexOf(args.old_str, idx + 1) !== -1) return `错误：old_str 匹配多处`;
-      const updated = orig.slice(0, idx) + args.new_str + orig.slice(idx + args.old_str.length);
+      const ed = applyEdit(orig, args.old_str, args.new_str, args.replace_all === true);
+      if (!ed.ok) return `错误：${ed.error}`;
+      const updated = ed.content;
+      const edNote = `（第 ${ed.line} 行${ed.count > 1 ? '起共 ' + ed.count + ' 处' : ''}${ed.how === 'exact' ? '' : '，' + ed.how}）`;
       // V8 招1：写之前 snapshot
       const stepN = gitStep();
       const pre = await gitAutoCommit(`[step ${stepN}] before edit_file ${args.path}`);
@@ -3558,20 +4517,20 @@ async function execTool(name, args, session, ws) {
       addPendingEdit(session, { id: crypto.randomBytes(4).toString('hex'), path: args.path, action: 'edit', oldContent: orig, newContent: updated, timestamp: Date.now() });
       broadcastEdits(ws); broadcastTree();
       const post = await gitAutoCommit(`[step ${stepN}] after edit_file ${args.path}`);
-      return `已编辑 ${args.path}\n[V8 git] pre=${pre.sha || '?'}  post=${post.sha || '?'}`;
+      return `已编辑 ${args.path}${edNote}\n[V8 git] pre=${pre.sha || '?'}  post=${post.sha || '?'}`;
     }
     case 'multi_edit': {
       const f = safePath(args.path);
+      { const g = _liveCaseEditGuard(f, false, args.allow_live_edit); if (g) return g; }
       const orig = await fs.readFile(f, 'utf8');
       let cur = orig;
       const edits = Array.isArray(args.edits) ? args.edits : [];
       if (edits.length === 0) return '错误：edits 为空';
       for (let i = 0; i < edits.length; i++) {
         const e = edits[i];
-        const idx = cur.indexOf(e.old_str);
-        if (idx === -1) return `错误：第 ${i+1} 个 edit 未找到 old_str`;
-        if (cur.indexOf(e.old_str, idx + 1) !== -1) return `错误：第 ${i+1} 个 edit 匹配多处`;
-        cur = cur.slice(0, idx) + e.new_str + cur.slice(idx + e.old_str.length);
+        const ed = applyEdit(cur, e.old_str, e.new_str, e.replace_all === true);
+        if (!ed.ok) return `错误：第 ${i+1} 个 edit：${ed.error}（整批未写入）`;
+        cur = ed.content;
       }
       // V8 招1：写之前 snapshot
       const stepN = gitStep();
@@ -3624,7 +4583,29 @@ async function execTool(name, args, session, ws) {
       await walk(root);
       return results.length ? results.join('\n') : '（无匹配）';
     }
-    case 'run_command': return await runShell(args.command, args.timeout_ms || 60000, session, ws);
+    case 'run_command': {
+      const cmd = String(args.command || '');
+      { const g = _liveCaseEditGuard(cmd, true, args.allow_live_edit); if (g) return g; }
+      if (/(mpirun|\bAllrun\b|\b[a-zA-Z]+Foam\b)/.test(cmd) && !/-postProcess|foamDictionary|foamList|foamListTimes|foamToVTK/.test(cmd)) {
+        const m = /cd\s+([^\s;&|]+)/.exec(cmd);
+        const gate = await _fidelityGate(session, m ? m[1].replace(/^~(?=\/)/, os.homedir()) : (session.workMem && session.workMem.casePath) || '', '运行求解器命令');
+        if (gate) return gate;
+        if (_MPI_LAUNCH_RE.test(cmd) || _npOf(cmd, m ? m[1] : '') > 1) { const over = _cpuOversubscribed(cmd, args.allow_oversubscribe, m ? m[1] : ''); if (over) return over; }
+      }
+      // 事件驱动等待：模型常写 "sleep 600; tail log" 盯求解器。开头的 sleep 改成可提前唤醒——
+      // 工作目录下的求解器全部退出就立刻结束 sleep、执行后半句，不再白等到点
+      {
+        const sm = /^\s*sleep\s+(\d+)\s*(?:;|&&)\s*([\s\S]*)$/.exec(cmd);
+        if (sm && Number(sm[1]) >= 20 && process.platform === 'linux') {
+          const r = await _wakeableSleep(Number(sm[1]) * 1000, session);
+          const rest = sm[2].trim();
+          const note = r.woke ? `[CFDriver] sleep ${sm[1]} 提前 ${Math.round(r.left / 1000)} s 结束：${r.why}\n` : '';
+          if (!rest) return note + '[退出码 0]';
+          return note + await runShell(rest, args.timeout_ms || 120000, session, ws);
+        }
+      }
+      return await runShell(args.command, args.timeout_ms || 120000, session, ws);
+    }
     case 'update_todos': {
       session.todos = (args.items || []).map(it => ({ text: String(it.text || ''), done: !!it.done }));
       broadcastTodos(ws);
@@ -3632,6 +4613,23 @@ async function execTool(name, args, session, ws) {
       return `已更新待办：${done}/${total} 完成`;
     }
     case 'task_complete': {
+      {
+        const gate = await _fidelityGate(session, (session.workMem && session.workMem.casePath) || '', 'task_complete');
+        if (gate) return gate;
+        const ft = ((session.task || session).fidelity || {}).taskText || '';
+        const kc = (session.task || session).kpiCred;
+        if (!args.force && Fidelity.isRepro(ft) && /(KPI|收率|选择性|转化率|yield|selectivity|conversion)/i.test(ft) && !(kc && kc.passed)) {
+          return `[task_complete] ⛔ 论文复现收尾前必须通过 kpi_credibility（统计窗已过 n·τ 准稳态、窗长≥τ、至少一个非初值主导的 KPI）。当前：${kc ? '最近一次未通过' : '未运行'}。若计算未达准稳态，请继续算而不是收尾。`;
+        }
+      }
+      // 持续进化：多阶段已验证流程收尾前必须沉淀一次 playbook（只提醒一次）
+      {
+        const e = Evolve.evo(session);
+        if (!args.force && Evolve.isEvolvable(session) && !e.distilled && !e.distillNudged) {
+          e.distillNudged = true;
+          return `[task_complete] ⏸ 收尾前先沉淀：本任务有 ${e.stages.filter(s => s.passed).length} 个阶段已验证通过。请调 vertical_distill({id, title, triggers, case_path:<最终已验证算例>, extra_paths:[自定义库/前处理/后处理脚本目录], kpis, benchmarks, pitfalls, notes}) 把整套流程存成垂直 playbook，下次同类任务直接实例化。若本任务确实不可复用，可直接再调 task_complete。`;
+        }
+      }
       // verifier 硬门：任何 verifier 最近一次是 FAIL 且未重验通过 → 拦截收尾（有界重试：修复后重验直至 pass）
       const vs = session.verifyState || {};
       const failing = Object.entries(vs).filter(([, v]) => v === 'fail').map(([k]) => k);
@@ -3640,14 +4638,23 @@ async function execTool(name, args, session, ws) {
         return `[task_complete] ⛔ 拦截收尾：以下 verifier 最近一次结果是 FAIL 且未重验通过：${failing.join(', ')}。\n按「verifier 闭环」铁律，未通过验证前禁止 task_complete。请：\n  1) 用 diagnose_error 分析失败原因 → 2) 修复 case/参数 → 3) 重新调用上述 verifier 直到 passed=true → 4) 再 task_complete。\n（已第 ${session._verifyGateHits} 次拦截。若确属 verifier 误报且你已人工核验无误，可加 force=true 强制收尾。）`;
       }
       // 软提醒：foam/mfix/lbm 模式下整轮一个 verifier 都没跑（不硬拦，仅警示）
-      if (!args.force && (session.foamMode || session.mfixMode || session.lbmMode) && Object.keys(vs).length === 0) {
+      // 收尾摘要里已有数值核验证据（FFT/过零点/理论值/相对偏差/End 等）就不再多拦一轮
+      const numericEvidence = /FFT|过零|zero.?cross|理论值|理论|相对偏差|偏差\s*[-+]?\d|交叉(校验|检查|验证)|cross.?check|\bEnd\b|日志有 End/i.test(String(args.summary || ''));
+      if (!args.force && !numericEvidence && (session.foamMode || session.mfixMode || session.lbmMode) && Object.keys(vs).length === 0) {
         session._noVerifyWarned = (session._noVerifyWarned || 0) + 1;
         if (session._noVerifyWarned <= 1) {
           return `[task_complete] ⚠ 本轮处于 CFD 模式但未运行任何 verifier（foam_mesh/geom/solve/post_verify 等）。\n收尾前强烈建议至少跑一个 verifier 确认结果可信；确实无需验证（如纯查询/讲解）可立即再调一次 task_complete 收尾。`;
         }
       }
       session.taskComplete = true;
+      if (session.task && session.task.goal && session.task.goal.status === 'active') {
+        session.task.goal.status = 'done'; session.task.goal.doneAt = Date.now(); session.task.goal.evidence = String(args.summary || '').slice(0, 1500);
+        try { broadcastTaskState(); } catch {}
+      }
+      recoveryManager.cancel(session.task, 'task_complete');
       ws.send(JSON.stringify({ type: 'task_complete', summary: args.summary || '' }));
+      notifyEvent({ kind: 'task_complete', key: `done:${session.task?.id}`, taskId: session.task?.id,
+        title: `🎯 任务完成：${session.task?.title || ''}`, body: String(args.summary || '').slice(0, 800) });
       return `任务标记完成：${args.summary || ''}`;
     }
 
@@ -3692,6 +4699,56 @@ async function execTool(name, args, session, ws) {
     }
 
     // ====================== V8 招3：错误诊断 ======================
+    case 'vertical_distill': {
+      const summarize = (stages) => llmOneShot('你把 CFD 智能体各阶段的实际轨迹压成可复用配方。输出 JSON 数组，与输入阶段一一对应：[{"recipe":"≤150字的具体做法(文件/命令/关键参数)","pitfall":"≤80字踩过的坑及修法,没有写\"\""}]。只写轨迹里出现过的事实。只输出 JSON。', JSON.stringify(stages).slice(0, 12000), { maxTokens: 2500 });
+      const abs = (p) => { const x = Evolve.expandHome(p); return path.isAbsolute(x) ? x : path.resolve(WORKSPACE, x); };
+      const r = await Evolve.distill(session, { ...args, case_path: abs(args.case_path), extra_paths: (args.extra_paths || []).map(abs) }, summarize);
+      if (!r.ok) return `[vertical_distill] 失败：${r.error}`;
+      Evolve.evo(session).distilled = r.id;
+      await Fidelity.recordLesson({ kind: 'playbook', detail: `${r.id} v${r.version}`, metrics: r.run });
+      return `[vertical_distill] ✅ playbook ${r.id} v${r.version} 已保存（模板 ${r.files} 个文件）→ ${r.dir}
+本次效率：LLM ${r.run.llmSteps} 步 / 工具 ${r.run.toolCalls} 次 / 报错 ${r.run.errors} 次 / ${r.run.wallMin} min。下次命中触发词会自动注入并提示 vertical_instantiate。`;
+    }
+    case 'vertical_instantiate': {
+      const dest = path.isAbsolute(Evolve.expandHome(args.dest)) ? Evolve.expandHome(args.dest) : path.resolve(WORKSPACE, args.dest);
+      const r = await Evolve.instantiate(args.id, dest, args.version || null);
+      if (!r.ok) return `[vertical_instantiate] 失败：${r.error}`;
+      const st = (r.pb.stages || []).map((s, i) => `  ${i + 1}) ${s.name}: ${s.recipe || s.memo || ''}${s.pitfall ? ' ⚠' + s.pitfall : ''}`).join('\n');
+      return `[vertical_instantiate] ✅ ${r.pb.title} v${r.version} → ${r.dest}（${r.files} 个文件${r.extras.length ? '；附带 ' + r.extras.join(', ') : ''}）
+已验证阶段配方：\n${st}
+基准：${JSON.stringify(r.pb.benchmarks || {})}
+注意事项：${r.pb.notes || '无'}
+下一步：只改与本任务不同的参数 → 重建网格（模板不含 polyMesh）→ 按阶段验证 → 求解。自定义库需重新 wmake。`;
+    }
+    case 'kpi_credibility': {
+      const r = Fidelity.kpiCredibility(args);
+      (session.task || session).kpiCred = { passed: r.passed, ts: Date.now() };
+      return `[kpi_credibility] passed=${r.passed}\n${r.issues.map(s => '⛔ ' + s).join('\n')}${r.issues.length ? '\n' : ''}${r.notes.map(s => '· ' + s).join('\n')}\n可作复现证据的 KPI：${r.evidence.join(', ') || '(无)'}`;
+    }
+    case 'foam_locate': {
+      const cd = path.isAbsolute(Evolve.expandHome(args.case_path)) ? Evolve.expandHome(args.case_path) : path.resolve(WORKSPACE, args.case_path);
+      const py = SETTINGS.pythonPath || (IS_WIN ? 'python' : 'python3');
+      let bashrc = SETTINGS.openfoamBash || (SETTINGS.foamRoot ? path.join(SETTINGS.foamRoot, 'etc', 'bashrc') : '');
+      const script = path.join(__dirname, 'foam_locate.py');
+      const cmd = IS_WIN ? `"${py}" "${script}" "${cd}" ${Number(args.n_times) || 3}`
+        : `${bashrc ? `source "${bashrc}" >/dev/null 2>&1; ` : ''}"${py}" "${script}" "${cd}" ${Number(args.n_times) || 3}`;
+      const r = await _spawnP(IS_WIN ? 'cmd.exe' : 'bash', IS_WIN ? ['/d', '/s', '/c', cmd] : ['-c', cmd], { cwd: cd });
+      const last = String(r.out || '').trim().split('\n').pop();
+      let j; try { j = JSON.parse(last); } catch { return `[foam_locate] 解析失败 code=${r.code}\n${String(r.out || '').slice(-800)}\n${String(r.err || '').slice(-800)}`; }
+      if (!j.ok) return `[foam_locate] ${j.error}`;
+      const L = [`[foam_locate] 时刻 ${j.times.join(', ')}`];
+      for (const s of j.summary) {
+        L.push(`- ${s.field}: max 序列 ${s.max_series.map(([t, v]) => `${t}→${v}`).join(', ')}（增长×${s.growth ?? '?'}${s.pinned_same_cell ? '，钉在同一单元' : ''}） @ (${s.loc.map(x => x.toFixed(4)).join(', ')})`);
+        if (s.nearest_patches) L.push(`    最近 patch: ${s.nearest_patches.map(p => `${p.patch}(${p.dist_m} m)`).join(', ')}`);
+      }
+      L.push('判读：增长倍数大 + 钉在同一单元 + 贴近某 patch → 该 patch 的边界条件/局部网格是发散源，优先检查它的 BC 类型（出口倒流、速度/压力配对、相分数边界）。');
+      return L.join('\n');
+    }
+    case 'vertical_list': {
+      const l = Evolve.listPlaybooks();
+      if (!l.length) return '[vertical_list] 还没有垂直 playbook。';
+      return '[vertical_list]\n' + l.map(pb => `- ${pb.id} v${pb.current} | ${pb.title} | 触发:${(pb.triggers || []).slice(0, 8).join('/')} | 历次:${(pb.runs || []).map(r => `${r.llmSteps}步/${r.errors}错/${r.wallMin}min`).join(' → ')}`).join('\n');
+    }
     case 'diagnose_error': {
       const r = diagnoseErrorText(args.text || '');
       if (!r.matched) {
@@ -3829,9 +4886,22 @@ async function execTool(name, args, session, ws) {
     case 'foam_find_source':   return await foamFindSource(args.query, args.kind || 'all', args.top_k || 12);
     case 'foam_clone_tutorial':return await foamCloneTutorial(args.tutorial_path, args.dest);
     case 'foam_inspect_case':  return await foamInspectCase(args.case_path);
-    case 'foam_run_solver_async': return await foamRunSolverAsync({ case_path: args.case_path, command: args.command }, ws);
+    case 'foam_run_solver_async': {
+      const gate = await _fidelityGate(session, args.case_path, '启动求解器');
+      if (gate) return gate;
+      const over = _cpuOversubscribed(args.command, args.allow_oversubscribe, args.case_path);
+      if (over) return over;
+      let pre = null;
+      if (_classifyFoamCommand(args.command) === 'solver' || /Foam\b/.test(String(args.command))) {
+        try { pre = await Prelaunch.prelaunchCheck(path.isAbsolute(args.case_path) ? args.case_path : path.resolve(WORKSPACE, args.case_path)); } catch {}
+        if (pre && pre.issues.length && !args.skip_prelaunch) return `[未启动] 启动前体检发现问题，修正后再启动（确认无碍可传 skip_prelaunch:true）：${Prelaunch.formatPrelaunch({ issues: pre.issues, facts: {} })}`;
+      }
+      const started = await foamRunSolverAsync({ case_path: args.case_path, command: args.command }, ws, session);
+      const early = await _earlyStatus(started, session);
+      return started + early + (pre ? Prelaunch.formatPrelaunch({ issues: [], facts: pre.facts }) : '');
+    }
     case 'foam_solver_status': return foamSolverStatus(args.run_id);
-    case 'foam_solver_stop':   return foamSolverStop(args.run_id);
+    case 'foam_solver_stop':   return await foamSolverStopWait(args.run_id);
     case 'foam_stl_inspect':   return await foamStlInspect(args.stl_path);
     case 'foam_mesh_plan':     return await foamMeshPlan(args);
     case 'foam_compute_first_layer': return foamComputeFirstLayer(args);
@@ -3840,11 +4910,15 @@ async function execTool(name, args, session, ws) {
     case 'foam_env_check':     return await foamEnvCheck();
     case 'opt_study_create':   return await optStudyCreate(args);
     case 'opt_suggest_next':   return await optSuggestNext(args);
+    case 'opt_run_trial':      return await optRunTrial(args);
     case 'opt_apply_params':   return await optApplyParams(args);
     case 'opt_extract_kpi':    return await optExtractKpi(args);
     case 'opt_record_result':  return await optRecordResult(args);
     case 'opt_status':         return await optStatus(args);
     case 'opt_render':         return await optRender(args, ws);
+    case 'solver_wait':         return await solverWait(args, session);
+    case 'foam_postproc_list':  return await foamPostprocList(args);
+    case 'foam_postproc_stats': return await foamPostprocStats(args);
     case 'foam_residual_series': return foamResidualSeries(args.run_id, args.max_points || 60, args.fields || null);
     case 'foam_compare_render':  return await foamCompareRender(args, ws);
     case 'foam_mesh_verify':     return await foamMeshVerify(args, ws, session);
@@ -3855,7 +4929,12 @@ async function execTool(name, args, session, ws) {
     // ---------- v0.6.0 自治可靠性 ----------
     case 'run_status_load': {
       const rs = _ensureRunState(session);
-      return `[run_status] ${JSON.stringify({ runId: rs.runId, label: rs.label, stages: rs.stages.map(s => ({ name: s.name, status: s.status, passed: s.verify ? s.verify.passed : null })), failCount: rs.failCount, memos: rs.memos.slice(-10) }, null, 2)}`;
+      // 同时列出所有在跑的后台求解作业（含服务接管的手动作业，runId 以 x 开头），免得 agent 去翻文件找 runId
+      const live = [...SOLVER_RUNS.values()].filter(r => !r.ended).map(r => {
+        let t = ''; for (let i = r.log.length - 1; i >= 0; i--) { const m = r.log[i].match(/^Time\s*=\s*([\d.eE+\-]+)/); if (m) { t = m[1]; break; } }
+        return { runId: r.runId, external: !!r.external, case: r.casePath, time: t || null, minutes: Math.round((Date.now() - r.started) / 60000) };
+      });
+      return `[run_status] ${JSON.stringify({ runId: rs.runId, label: rs.label, stages: rs.stages.map(s => ({ name: s.name, status: s.status, passed: s.verify ? s.verify.passed : null })), failCount: rs.failCount, memos: rs.memos.slice(-10), liveSolverJobs: live }, null, 2)}`;
     }
     case 'run_stage_start': {
       const rs = _ensureRunState(session);
@@ -3914,14 +4993,14 @@ async function execTool(name, args, session, ws) {
     case 'mfix_find_tutorial':    return await mfixFindTutorial(args.query, args.top_k || 12);
     case 'mfix_clone_tutorial':   return await mfixCloneTutorial(args.tutorial_path, args.dest);
     case 'mfix_inspect_case':     return await mfixInspectCase(args.case_path);
-    case 'mfix_run_solver_async': return await mfixRunSolverAsync({ case_path: args.case_path, command: args.command }, ws);
+    case 'mfix_run_solver_async': return await mfixRunSolverAsync({ case_path: args.case_path, command: args.command }, ws, session);
     case 'mfix_solver_status':    return mfixSolverStatus(args.run_id);
     case 'mfix_solver_stop':      return mfixSolverStop(args.run_id);
     // ---------- LBM-Beta dispatch ----------
     case 'lbm_find_tutorial':  return await lbmFindTutorial(args.query, args.top_k || 12);
     case 'lbm_clone_tutorial': return await lbmCloneTutorial(args.tutorial_path, args.dest);
     case 'lbm_inspect_case':   return await lbmInspectCase(args.case_path, args.algorithm || '');
-    case 'lbm_run_async':      return await lbmRunAsync({ case_path: args.case_path, command: args.command }, ws);
+    case 'lbm_run_async':      return await lbmRunAsync({ case_path: args.case_path, command: args.command }, ws, session);
     case 'lbm_solver_status':  return lbmSolverStatus(args.run_id);
     case 'lbm_solver_stop':    return lbmSolverStop(args.run_id);
     case 'web_search': return await webSearch(args.query, args.top_k || 6, { topic: args.topic, time_range: args.time_range, include_answer: args.include_answer, progress: session?._progressPub });
@@ -3940,6 +5019,10 @@ async function execTool(name, args, session, ws) {
     case 'request_user_digitize': return await requestUserDigitize(args || {}, ws, session);
     case 'read_paper': return await readWithVisionFallback('paper', args, session, () => readPaper(args.path, args.focus || '', session?._progressPub));
     case 'paper_extract': return await paperExtract(args.path, args.focus || '', !!args.render_pages, session?._progressPub);
+    case 'paper_figures': return await paperFigures(args);
+    case 'post_view': return await postViewTool(args, ws, session);
+    case 'skill_pack_read': return await Cap.readPackFile(SKILL_PACK_DIR, String(args.pack || ''), args.file ? String(args.file) : '');
+    case 'image_crop': return await imageCrop(args);
     case 'paper_search': return await paperSearch(args.query, { topK: args.top_k || 8, year: args.year, openAccessOnly: !!args.open_access_only, fieldsOfStudy: args.fields_of_study, progress: session?._progressPub });
     case 'paper_fetch': return await paperFetch(args.id, { download: !!args.download, maxRefs: args.max_refs || 30, progress: session?._progressPub });
     case 'vision_analyze': return await visionAnalyze(args.images || [], args.question || '', args.max_tokens || 1500, session?._progressPub);
@@ -3962,10 +5045,22 @@ async function execTool(name, args, session, ws) {
           `\n\n⚠️ 下一步必须做：调 \`vision_analyze(images=['${savedPath || '<上面那个路径>'}'], question='...')\` 让 VLM 检查这张图——别只凭"渲染成功"就下结论。建议问：① 流场结构是否物理合理（对称/无突变/无 NaN 块）② 量级是否符合预期 ③ 颜色梯度是否平滑 ④ 与论文图（如有）是否定性一致。`;
       } catch (e) { return `渲染失败：${e.message}`; }
     }
-    default: return `未知工具：${name}`;
+    default:
+      if (name.startsWith('mcp__')) return await mcpCall(name, args);
+      return `未知工具：${name}`;
   }
 }
 
+// 杀进程树：POSIX 先 SIGTERM 整个进程组，3 s 后 SIGKILL；Windows 用 taskkill /T /F。tree:false 只终止 shell 本身
+function _killProcTree(child, { tree = true } = {}) {
+  const pid = child && child.pid;
+  if (!pid) return;
+  if (!tree) { try { child.kill(); } catch (e) { return; } return; }
+  if (IS_WIN) { try { spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true }); } catch (e) { return; } return; }
+  const sig = g => { try { process.kill(-pid, g); } catch (e) { try { process.kill(pid, g); } catch (e2) { return; } } };
+  sig('SIGTERM');
+  setTimeout(() => sig('SIGKILL'), 3000).unref();
+}
 async function runShell(command, timeout, session, ws) {
   return await new Promise((resolve) => {
     const shell = IS_WIN ? (process.env.COMSPEC || 'cmd.exe') : 'bash';
@@ -3990,15 +5085,16 @@ async function runShell(command, timeout, session, ws) {
       env.VIRTUAL_ENV = dir.replace(/[\\/](Scripts|bin)$/i, '');
       env.PYTHONIOENCODING = 'utf-8';
     }
-    const child = spawn(shell, shellArgs, { cwd: WORKSPACE, env });
+    // POSIX 下独立进程组：超时/停止时能连同子进程一起杀（否则只杀到 bash，python 等留成孤儿）
+    const child = spawn(shell, shellArgs, { cwd: WORKSPACE, env, detached: !IS_WIN, windowsHide: true });
     session.currentProc = child;
-    let out = '';
+    const buf = headTailBuffer();
 
     // —— 如果命令里含 OpenFOAM 求解器/网格工具，自动登记到 SOLVER_RUNS，
     //    让"求解器监测"面板能选到这次 run_command 起的进程
     let foamRun = null;
     try {
-      const _foamRegex = /\b(blockMesh|snappyHexMesh|surfaceFeature(?:Extract|s)?|extrudeMesh|topoSet|refineMesh|checkMesh|renumberMesh|decomposePar|reconstructPar(?:Mesh)?|foamToVTK|setFields|mapFields|potentialFoam|simpleFoam|pimpleFoam|pisoFoam|icoFoam|interFoam|interIsoFoam|rhoSimpleFoam|rhoPimpleFoam|sonicFoam|chtMultiRegionFoam|buoyantSimpleFoam|buoyantPimpleFoam|reactingFoam|reactingTwoPhaseEulerFoam|multiphaseEulerFoam|driftFluxFoam|laplacianFoam|scalarTransportFoam|dnsFoam|foamRun)\b/i;
+      const _foamRegex = /\b(blockMesh|snappyHexMesh|surfaceFeature(?:Extract|s)?|extrudeMesh|topoSet|refineMesh|checkMesh|renumberMesh|decomposePar|reconstructPar(?:Mesh)?|foamToVTK|setFields|mapFields|potentialFoam|simpleFoam|pimpleFoam|pisoFoam|icoFoam|interFoam|interIsoFoam|rhoSimpleFoam|rhoPimpleFoam|sonicFoam|chtMultiRegionFoam|buoyantSimpleFoam|buoyantPimpleFoam|reactingFoam|reactingTwoPhaseEulerFoam|multiphaseEulerFoam|driftFluxFoam|laplacianFoam|scalarTransportFoam|dnsFoam|foamRun|lmp_\w+|liggghts\w*)\b/i;
       if (_foamRegex.test(command)) {
         // 从命令里抽 case 路径
         let foamCase = '';
@@ -4028,12 +5124,12 @@ async function runShell(command, timeout, session, ws) {
 
     const onData = d => {
       const s = d.toString();
-      out += s;
+      buf.push(s);
       const lines = s.split(/\r?\n/);
       lines.forEach(l => l && ws.send(JSON.stringify({ type: 'term', line: l })));
       // 同步落到 SOLVER_RUNS
       if (foamRun) {
-        lines.forEach(l => { if (l) foamRun.log.push(l); });
+        lines.forEach(l => { if (l) { foamRun.log.push(l); foamRun._lineNo = (foamRun._lineNo || 0) + 1; } });
         if (foamRun.log.length > 4000) foamRun.log.splice(0, foamRun.log.length - 4000);
         for (const sub of foamRun.subs) if (sub.readyState === 1) {
           sub.send(JSON.stringify({ type: 'solver_log', runId: foamRun.runId, lines: lines.filter(Boolean) }));
@@ -4041,18 +5137,44 @@ async function runShell(command, timeout, session, ws) {
       }
     };
     child.stdout.on('data', onData); child.stderr.on('data', onData);
-    const t = setTimeout(() => { try { child.kill(); } catch {}; ws.send(JSON.stringify({ type: 'term', line: '[超时已终止]' })); }, timeout);
+    // 求解器/网格命令、带后台作业（& / nohup）的命令保持原行为：只终止 shell，后台进程照常运行；其余命令超时杀整棵进程树
+    child._isSolver = !!foamRun || isSolverLaunchCommand(command) || /\b(nohup|setsid|disown)\b|(?<![&>|])&(?![&>])/.test(command);
+    let timedOut = false;
+    const t = setTimeout(() => { timedOut = true; _killProcTree(child, { tree: !child._isSolver }); ws.send(JSON.stringify({ type: 'term', line: '[超时已终止]' })); }, timeout);
+    // 命令里用 & 放到后台的进程（nohup mpirun ... &）会继承输出管道，'close' 要等它退出才触发，
+    // 智能体因此卡到超时。shell 本身退出后 2 s 仍未 close → 断开管道直接收尾，后台进程照常运行
+    let detached = false;
+    child.on('exit', () => setTimeout(() => {
+      const open = (child.stdout && !child.stdout.destroyed) || (child.stderr && !child.stderr.destroyed);
+      if (!open) return;
+      detached = true;
+      try { child.stdout && child.stdout.destroy(); } catch {}
+      try { child.stderr && child.stderr.destroy(); } catch {}
+    }, 2000));
     child.on('close', code => { clearTimeout(t); session.currentProc = null;
       ws.send(JSON.stringify({ type: 'term', line: `[退出码 ${code}]` })); broadcastTree();
-      if (foamRun) {
+      if (foamRun && detached && process.platform === 'linux') {
+        // 后台求解器还在跑：等工作区里的求解器全部退出再记结束，solver_wait / 自动唤醒照常可用
+        buf.push('\n[CFDriver] 命令已返回，后台进程仍在运行；可用 solver_wait 等它结束（runId=' + foamRun.runId + '）');
+        const root = path.resolve(WORKSPACE);
+        const tStart = Date.now(); let seen = false;
+        const iv = setInterval(() => {
+          if (_solversUnder(root) > 0) { seen = true; return; }
+          if (!seen && Date.now() - tStart < 120_000) return;   // mpirun 拉起求解器需要时间
+          clearInterval(iv);
+          foamRun.ended = Date.now(); foamRun.exitCode = 0;
+          for (const sub of foamRun.subs) if (sub.readyState === 1) sub.send(JSON.stringify({ type: 'solver_done', runId: foamRun.runId, exitCode: 0 }));
+          _solverEnded(foamRun);
+        }, 10_000);
+      } else if (foamRun) {
         foamRun.ended = Date.now(); foamRun.exitCode = code;
-        for (const sub of foamRun.subs) if (sub.readyState === 1) sub.send(JSON.stringify({ type: 'solver_done', runId: foamRun.runId, exitCode: code }));
-        try {
-          const msg = JSON.stringify({ type: 'runs_update', reason: 'run_command_ended', runId: foamRun.runId });
-          for (const c of allClients) if (c.readyState === 1) c.send(msg);
-        } catch {}
+        if (code !== 0 && _endedCleanly(foamRun.log)) { foamRun.rawExitCode = code; foamRun.exitCode = 0; foamRun.endAbort = true; }
+        for (const sub of foamRun.subs) if (sub.readyState === 1) sub.send(JSON.stringify({ type: 'solver_done', runId: foamRun.runId, exitCode: foamRun.exitCode }));
+        _solverEnded(foamRun);
       }
-      resolve(`[退出码 ${code}]\n${out.slice(0, 50000)}`); });
+      const note = foamRun && foamRun.endAbort ? `\n[CFDriver] 求解器在最后一个时间步之后已打印 End：退出码 ${code} 来自 End 之后的析构/MPI 收尾，计算正常完成，结果有效，不要重算。` : '';
+      const tnote = timedOut && !child._isSolver ? `[命令超时：${Math.round(timeout / 1000)} s 后命令及其子进程已被终止。确实需要更久就带更大的 timeout_ms 重跑；长时间计算用 foam_run_solver_async + solver_wait。]\n` : '';
+      resolve(`${tnote}[退出码 ${code}]${note}\n${buf.toString()}`); });
     child.on('error', err => { clearTimeout(t); session.currentProc = null; resolve(`[启动失败] ${err.message}`); });
   });
 }
@@ -4117,7 +5239,8 @@ async function flatList() {
     for (const e of entries) {
       if (IGNORE.has(e.name) || e.name.startsWith('.')) continue;
       const full = path.join(dir, e.name);
-      if (e.isDirectory()) await walk(full);
+      // processor*/dynamicCode 下是成千上万个分解场文件，会把 2000 条上限占满
+      if (e.isDirectory()) { if (!/^(processor\d+|dynamicCode)$/.test(e.name)) await walk(full); }
       else out.push(path.relative(WORKSPACE, full).replaceAll('\\', '/'));
       if (out.length > 2000) return;
     }
@@ -4217,67 +5340,89 @@ function sanitizeToolCallArgs(messages) {
   }
   return fixed;
 }
+// 任务可以单独指定模型（task.modelRef = { provider, model }）；没指定就用设置里的主模型
+function _taskSettings(ws) {
+  try { const t = sessions.get(ws)?.task; return settingsForRef(SETTINGS, t && t.modelRef); } catch { return SETTINGS; }
+}
+function modelLabel(ref) {
+  const st = settingsForRef(SETTINGS, ref);
+  if (st.provider === 'copilot') return 'Copilot · ' + (SETTINGS.copilotModel || 'gpt-4.1');
+  const p = ref && ref.provider && ref.provider !== 'main' ? (SETTINGS.providers || []).find(x => x.id === ref.provider) : null;
+  return (st.model || '未配置') + (p ? ` · ${p.name}` : '');
+}
 async function callLLM(messages, ws, abortSignal, toolsForCall) {
-  if (SETTINGS.provider === 'copilot') return callCopilot(messages, ws, abortSignal, toolsForCall);
-  const isLocal = SETTINGS.provider === 'local' || _isLocalEndpoint(SETTINGS.baseUrl);
-  if (!SETTINGS.apiKey && !isLocal) throw new Error('未配置 API Key，请到设置中填入');
+  const ST = typeof _taskSettings === 'function' ? _taskSettings(ws) : SETTINGS;
+  if (ST.provider === 'copilot') return callCopilot(messages, ws, abortSignal, toolsForCall);
+  const config = resolveChatConfig(ST);
   const TOOLS_FOR_CALL = toolsForCall || TOOLS;
   // 发请求前先清洗：修掉任何残缺 JSON 的 tool_call 参数，防止上游 400（见 sanitizeToolCallArgs 注释）
   try { const nFix = sanitizeToolCallArgs(messages); if (nFix && ws) ws.send(JSON.stringify({ type: 'term', line: `[修复] 检测到 ${nFix} 处被截断的工具调用参数（残缺 JSON）→ 已规整为 {} 避免请求 400` })); } catch {}
-  // baseUrl 兼容：已带 /v1 就不再重复拼，否则补 /v1
-  const base = SETTINGS.baseUrl.replace(/\/+$/, '');
-  const url = /\/v1$/.test(base) ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
-  const headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SETTINGS.apiKey || 'local'}` };
-  const reqBody = { model: SETTINGS.model, messages, tools: TOOLS_FOR_CALL, tool_choice: 'auto', stream: true, stream_options: { include_usage: true }, temperature: 0.2 };
+  const url = config.url;
+  const headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.apiKey || 'local'}` };
+  const reqBody = { model: config.model, messages, tools: TOOLS_FOR_CALL, tool_choice: 'auto', stream: true, stream_options: { include_usage: true }, temperature: 0.2 };
   // 推理模型思考预算：限制每一轮的 reasoning 长度，避免"一步把所有事想完"式的超长空转思考。
   // 仅对"推理型"模型（Qwen3 / GLM / DeepSeek-R 系 / 带 think/reason 字样）下发该字段，
   // 避免非推理模型端点因不认识 thinking_budget 而 400。Copilot 走另一条代码路径。
   const tb = Number(SETTINGS.thinkingBudget);
-  const mdl = String(SETTINGS.model || '').toLowerCase();
+  const mdl = String(config.model || '').toLowerCase();
   const isReasoningModel = /qwen3|glm-?[45]|deepseek-?r|[-/]r1\b|reasoner|think/.test(mdl);
   if (Number.isFinite(tb) && tb > 0 && isReasoningModel && (SETTINGS.provider || 'sf') !== 'copilot') {
     reqBody.thinking_budget = tb;
   }
   const body = JSON.stringify(reqBody);
-  // v0.8.0 连接超时 + 一次重试（首 token 超时由 consumeOpenAIStream 的 IDLE 看门狗保障）
-  let lastErr = null;
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    let connectTimer = null;
+  // 对照 OpenCode：429 / 408 / 409 / 5xx / 网络错误按 min(2s·2^(n-1), 10s)·抖动 退避重试，遵守 retry-after（上限 15 min）；
+  // 401 / 402 / 403 / 其余 4xx 不重试；上下文超长单独标记，交给 runAgent 压缩后重发；超时类最多重试 3 次。
+  // 首 token 超时由 consumeOpenAIStream 的 IDLE 看门狗保障。
+  const LLM_RETRY_MAX = Number.isInteger(SETTINGS.llmRetryMax) && SETTINGS.llmRetryMax >= 0 ? SETTINGS.llmRetryMax : 6;
+  const _say = (line, detail) => {
+    if (!ws) return;
+    try { ws.send(JSON.stringify({ type: 'term', line })); ws.send(JSON.stringify({ type: 'agent_phase', phase: 'llm_retry', detail })); } catch (e) { return; }
+  };
+  const _wait = ms => new Promise((res, rej) => {
+    if (abortSignal && abortSignal.aborted) return rej(new Error('aborted'));
+    const onAbort = () => { clearTimeout(tm); rej(new Error('aborted')); };
+    const tm = setTimeout(() => { if (abortSignal) abortSignal.removeEventListener('abort', onAbort); res(); }, ms);
+    if (abortSignal) abortSignal.addEventListener('abort', onAbort, { once: true });
+  });
+  let lastErr = null, timeoutRetries = 0;
+  for (let attempt = 1; attempt <= LLM_RETRY_MAX + 1; attempt++) {
     const connectCtrl = new AbortController();
-    connectTimer = setTimeout(() => { try { connectCtrl.abort(new Error('connect_timeout_180s')); } catch {} }, 180_000);
+    // 只等响应头；正常 3–40 s
+    const connectTimer = setTimeout(() => { try { connectCtrl.abort(new Error(`connect_timeout_${LLM_CONNECT_TIMEOUT_MS / 1000}s`)); } catch (e) { return; } }, LLM_CONNECT_TIMEOUT_MS);
     const signal = _combineSignals(abortSignal, connectCtrl.signal);
+    let delay = 0, why = '';
     try {
       const resp = await fetch(url, { method: 'POST', headers, body, signal });
       clearTimeout(connectTimer);
-      if (!resp.ok) {
-        const txt = await resp.text();
-        const hint = resp.status === 404 ? '（模型名不存在？请到 ⚙ 设置中改成 deepseek-ai/DeepSeek-V3 等有效模型）' : '';
-        // 4xx 不重试（业务错）；5xx 重试一次
-        if (resp.status >= 400 && resp.status < 500) {
-          throw new Error(`API ${resp.status} ${hint}: ${txt.slice(0, 400)}`);
-        }
-        lastErr = new Error(`API ${resp.status}: ${txt.slice(0, 400)}`);
-        if (attempt === 1) {
-          try { ws.send(JSON.stringify({ type: 'term', line: `[LLM 5xx 重试 ${attempt}/1] ${resp.status}` })); } catch {}
-          continue;
-        }
-        throw lastErr;
+      if (resp.ok) return await consumeOpenAIStream(resp, ws);
+      const txt = await resp.text();
+      const getH = k => (resp.headers && typeof resp.headers.get === 'function' ? resp.headers.get(k) : null);
+      const kind = classifyLlmHttp(resp.status, txt, getH('x-should-retry'));
+      const hint = resp.status === 404 ? '（请检查通用 API 的 Base URL 和模型 ID 是否与服务端一致）' : '';
+      lastErr = new Error(`API ${resp.status} ${hint}: ${txt.slice(0, 400)}`);
+      lastErr.status = resp.status;
+      if (kind === 'overflow') lastErr.contextOverflow = true;
+      if (kind !== 'retry') lastErr.noRetry = true;
+      else {
+        const ra = parseRetryAfter(getH);
+        delay = llmRetryDelay(attempt, ra == null ? null : Math.min(ra, 15 * 60_000));
+        why = `HTTP ${resp.status}` + (ra != null ? '（服务端要求等待）' : '');
       }
-      return await consumeOpenAIStream(resp, ws);
     } catch (e) {
       clearTimeout(connectTimer);
-      // 用户主动 abort 不重试
-      if (abortSignal && abortSignal.aborted) throw e;
+      if (abortSignal && abortSignal.aborted) throw e;   // 用户主动停止不重试
+      if (e && e.partialOutput) throw e;          // 已经开始输出后断流：交上层恢复，不在这里整轮重发
       const msg = String(e && e.message || e);
-      const isRetryable = /timeout|aborted|ECONN|ENET|ENOTFOUND|EAI_AGAIN|fetch failed|socket hang up|network|TimeoutError/i.test(msg) || (e && e.name === 'AbortError' && connectCtrl.signal.aborted);
+      const isTimeout = isTimeoutError(msg) || (e && e.name === 'AbortError' && connectCtrl.signal.aborted);
       lastErr = e;
-      if (attempt === 1 && isRetryable) {
-        try { ws.send(JSON.stringify({ type: 'term', line: `[LLM 网络异常重试 ${attempt}/1] ${msg.slice(0, 200)}` })); } catch {}
-        await new Promise(r => setTimeout(r, 1500));
-        continue;
-      }
-      throw e;
+      if (isTimeout ? timeoutRetries >= 3 : !isNetworkError(msg)) throw e;
+      if (isTimeout) timeoutRetries++;
+      delay = llmRetryDelay(attempt);
+      why = msg.slice(0, 160);
     }
+    if (lastErr.noRetry || attempt > LLM_RETRY_MAX) throw lastErr;
+    _say(`[LLM 重试 ${attempt}/${LLM_RETRY_MAX}] ${why}，${(delay / 1000).toFixed(1)} s 后重发`, `${why.slice(0, 60)} · ${Math.round(delay / 1000)} s 后第 ${attempt} 次重试`);
+    await _wait(delay);
   }
   throw lastErr || new Error('callLLM exhausted retries');
 }
@@ -4305,8 +5450,9 @@ async function consumeOpenAIStream(resp, ws) {
   let assistantMsg = { role: 'assistant', content: '', tool_calls: [] };
   let usage = null;
   let finishReason = null;   // 'stop' | 'length' | 'tool_calls' ...：=length 说明本轮输出被截断，tool_call 参数可能残缺
+  let sawDone = false;         // 收到过 [DONE]：流是正常收尾的
   // 流空闲看门狗：超过 IDLE_MS 没收到任何 chunk 就主动断开，避免 LLM/代理静默卡住把整个 agent 卡死
-  const IDLE_MS = 90_000;
+  const IDLE_MS = parseInt(process.env.LLM_IDLE_TIMEOUT_MS || '120000', 10);
   let idleTimer = null;
   let idleAborted = false;
   function armIdle() {
@@ -4335,7 +5481,7 @@ async function consumeOpenAIStream(resp, ws) {
       const lines = buffer.split('\n'); buffer = lines.pop();
       for (const line of lines) {
         if (!line.startsWith('data:')) continue;
-        const data = line.slice(5).trim(); if (data === '[DONE]') continue;
+        const data = line.slice(5).trim(); if (data === '[DONE]') { sawDone = true; continue; }
         try {
           const j = JSON.parse(data);
           if (j.usage) usage = j.usage;
@@ -4387,11 +5533,21 @@ async function consumeOpenAIStream(resp, ws) {
         } catch {}
       }
     }
+  } catch (e) {
+    // 读流途中出错：没有输出 → 抛给 callLLM 重试；只有正文 → 保留正文（下面按 interrupted 处理，模型接着写）；带工具调用 → 抛出，参数可能残缺
+    if (e && typeof e === 'object') e.partialOutput = !!(assistantMsg.content || assistantMsg.tool_calls.length);
+    if (!assistantMsg.content || assistantMsg.tool_calls.length) throw e;
   } finally {
     if (idleTimer) clearTimeout(idleTimer);
     if (phaseTimer) clearInterval(phaseTimer);
   }
-  if (idleAborted) throw new Error(`LLM 流空闲超时 ${IDLE_MS/1000}s（已自动中止，可重试）`);
+  const _hadOutput = !!(assistantMsg.content || assistantMsg.tool_calls.length);
+  if (idleAborted) { const e = new Error(`LLM 流空闲超时 ${IDLE_MS/1000}s（已自动中止，可重试）`); e.partialOutput = _hadOutput; throw e; }
+  if (buffer && buffer.includes('[DONE]')) sawDone = true;
+  // 既没有 finish_reason 也没有 [DONE]：上游断流。没有任何内容 → 按网络错误重试；有内容 → 标记 interrupted，由 runAgent 让模型接着写
+  const _cutOff = !finishReason && !sawDone;
+  if (_cutOff && !_hadOutput) throw new Error('incomplete stream (network error)：上游没有返回任何内容就结束了');
+  Object.defineProperty(assistantMsg, '_finish', { value: finishReason || (_cutOff ? 'interrupted' : null), enumerable: false });
   // 流结束后立刻规整本轮 tool_call 参数：若被截断成残缺 JSON，就地修成 {}，
   // 保证不把残缺 JSON 塞进历史（否则下一轮请求会被上游 json.loads 校验打回 400）。
   if (assistantMsg.tool_calls.length) {
@@ -4402,8 +5558,22 @@ async function consumeOpenAIStream(resp, ws) {
   }
   // 注意 sanitize 可能已把空 tool_calls 字段整个删掉，需先判存在再取 length
   if (Array.isArray(assistantMsg.tool_calls) && assistantMsg.tool_calls.length === 0) delete assistantMsg.tool_calls;
-  if (usage) ws.send(JSON.stringify({ type: 'usage', usage }));
+  if (usage) {
+    ws.send(JSON.stringify({ type: 'usage', usage }));
+    _accumUsage(ws, usage);
+  }
   return assistantMsg;
+}
+// 每个任务累计 LLM 用量（调用数、输入/缓存/输出 token），存在 task.usageTotals，便于调优与 A/B 对账
+function _accumUsage(ws, usage) {
+  try {
+    const s = sessions.get(ws); const t = s && s.task; if (!t) return;
+    const u = t.usageTotals || (t.usageTotals = { calls: 0, prompt: 0, cached: 0, completion: 0, maxPrompt: 0 });
+    const p = Number(usage.prompt_tokens || usage.input_tokens) || 0;
+    const c = Number((usage.prompt_tokens_details && usage.prompt_tokens_details.cached_tokens) || usage.cache_read_input_tokens) || 0;
+    u.calls++; u.prompt += p; u.cached += c; u.completion += Number(usage.completion_tokens || usage.output_tokens) || 0;
+    if (p > u.maxPrompt) u.maxPrompt = p;
+  } catch {}
 }
 
 // ============ GitHub Copilot Provider ============
@@ -4527,7 +5697,7 @@ async function callCopilot(messages, ws, abortSignal, toolsForCall) {
 
 
 
-const SYSTEM_PROMPT_BASE = (ws) => `你是 CFDriver —— 自动化 CFD 仿真智能体（作者 LZF），运行在用户本机（${process.platform}）。
+const SYSTEM_PROMPT_BASE = (ws) => `你是 CFDriver —— 面向反应器复现、评估与优化的 CFD 智能体（作者 LZF），运行在用户本机（${process.platform}）。
 
 # 工作目录
 ${ws}
@@ -4671,6 +5841,16 @@ function loadAllTasks() {
         if (t && t.id) {
           t.messages = Array.isArray(t.messages) ? t.messages : [];
           t.todos = Array.isArray(t.todos) ? t.todos : [];
+          // 重启时正在执行的工具调用（如 solver_wait）没有响应：补占位；自主模式下安排一次自动续跑
+          const nDangling = repairDanglingToolCalls(t.messages);
+          if (nDangling) {
+            console.log(`[tasks] ${t.title || t.id}: 补齐 ${nDangling} 个被重启中断的工具调用`);
+            if (t.autoMode === true && !t.awaitingApproval && !t.pendingQuestion && !['pending', 'running'].includes(t.recovery?.status)) {
+              t.messages.push({ role: 'user', content: '[系统] 服务刚刚重启（版本更新），上一步工具调用被中断，结果未知。请先 run_status_load 看在跑的作业和待办，从中断处继续，不要从头重来。' });
+              t.recovery = { attempt: 0, nextAt: Date.now() + 15_000, lastError: 'fetch failed: 服务重启中断（自动续跑）', status: 'pending' };
+            }
+            try { fssync.writeFileSync(path.join(TASKS_DIR, f), JSON.stringify(t)); } catch {}
+          }
           TASKS.set(t.id, t);
         }
       } catch {}
@@ -4689,7 +5869,9 @@ function persistTaskNow(task) {
     // 大图附件（base64 dataUrl）不落盘，否则单文件可能几十 MB；重启后图片上下文丢失可接受
     const json = JSON.stringify(clean, (k, v) =>
       (k === 'image_url' && v && typeof v.url === 'string' && v.url.length > 100_000) ? { url: '[图片过大未存盘]' } : v);
-    fssync.writeFileSync(_taskFile(task.id), json);
+    const temporary = _taskFile(task.id) + '.tmp';
+    fssync.writeFileSync(temporary, json);
+    fssync.renameSync(temporary, _taskFile(task.id));
   } catch (e) { console.warn('[tasks] 保存失败:', e.message); }
 }
 function schedulePersistTask(task) {
@@ -4712,15 +5894,27 @@ function ensureCurrentTask() {
 }
 function attachSessionToTask(s, task) {
   s.task = task;
+  if (typeof task.autoMode !== 'boolean') task.autoMode = !!s.autoMode;
+  if (typeof task.autoMode === 'boolean') s.autoMode = task.autoMode;
+  s.awaitingUserChoice = !!task.awaitingUserChoice;
+  s.pendingQuestion = task.pendingQuestion || null;
+  s._recoveryApprovalBlocked = !!task.awaitingApproval;
   if (!Array.isArray(task.messages) || task.messages.length === 0) task.messages = [{ role: 'system', content: SYSTEM_PROMPT_BASE(WORKSPACE) }];
   s.messages = task.messages;             // 同一数组引用：session 写 = 任务写
   s.todos = Array.isArray(task.todos) ? task.todos : [];
   task.todos = s.todos;
+  // 工作记忆(stage/casePath/solver/verified/pitfalls)跟任务走：重启/刷新后长程任务接着原状态
+  s.workMem = (task.workMem && typeof task.workMem === 'object') ? task.workMem : null;
 }
 function syncTaskFromSession(s) {
   const t = s && s.task; if (!t) return;
+  if (taskOwner(s) !== s) return;
   t.messages = s.messages;                // autoCompact 可能重建过数组引用，这里收敛回任务
   t.todos = s.todos || [];
+  t.awaitingUserChoice = !!s.awaitingUserChoice;
+  t.awaitingApproval = !!s.pendingApproval || !!s._recoveryApprovalBlocked;
+  t.pendingQuestion = s.pendingQuestion || null;
+  if (s.workMem) t.workMem = s.workMem;
   t.updatedAt = Date.now();
 }
 function persistSession(s, now) {
@@ -4729,8 +5923,23 @@ function persistSession(s, now) {
   (now ? persistTaskNow : schedulePersistTask)(s.task);
 }
 function taskListPayload(forSession) {
+  const jobs = new Map();
+  for (const r of SOLVER_RUNS.values()) {
+    if (r && !r.ended && r.ownerTaskId) jobs.set(r.ownerTaskId, (jobs.get(r.ownerTaskId) || 0) + 1);
+  }
   const list = [...TASKS.values()].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
-    .map(t => ({ id: t.id, title: t.title, updatedAt: t.updatedAt, msgCount: (t.messages || []).length }));
+    .map(t => ({ id: t.id, title: t.title, updatedAt: t.updatedAt, msgCount: (t.messages || []).length,
+      autoMode: t.autoMode === true,
+      agentMode: t.agentMode === 'plan' ? 'plan' : 'build',
+      goal: t.goal ? { text: t.goal.text, criteria: t.goal.criteria || '', status: t.goal.status, nudges: t.goal.nudges || 0 } : null,
+      ctxChars: historyCharCount(t.messages || []), ctxMax: MAX_HISTORY_CHARS,
+      forkOf: t.forkOf || null,
+      modelRef: t.modelRef || null, model: modelLabel(t.modelRef),
+      multiRun: t.multiRun || null,
+      usage: t.usageTotals ? { calls: t.usageTotals.calls, prompt: t.usageTotals.prompt, completion: t.usageTotals.completion } : null,
+      running: !!(t._runningSession && t._runningSession._running),
+      jobs: jobs.get(t.id) || 0, caseDir: _taskCaseDir(t),
+      recovery: t.recovery ? { status: t.recovery.status, attempt: t.recovery.attempt, nextAt: t.recovery.nextAt } : null }));
   // currentId 按连接返回：每个窗口显示自己挂载的任务，多窗口可并行跑不同任务互不干扰
   const currentId = (forSession && forSession.task && forSession.task.id) || CURRENT_TASK_ID;
   return { type: 'task_state', list, currentId };
@@ -4742,7 +5951,7 @@ function broadcastTaskState() {
 }
 // 从 LLM messages 推导前端可回放的对话事件（不另存一份转写，零额外簿记）
 function taskHistoryPayload(task) {
-  const ev = [];
+  const ev = []; let ui = 0;
   for (const m of (task.messages || [])) {
     if (!m) continue;
     if (m.role === 'user') {
@@ -4750,7 +5959,7 @@ function taskHistoryPayload(task) {
       text = String(text);
       if (/^\[(系统|提示|SYSTEM)/.test(text)) continue;          // 反空转/循环守卫注入的伪 user 消息不回放
       if (text.startsWith('以下是之前会话的压缩总结')) { ev.push({ k: 'sys', text: '（更早的历史已自动压缩为摘要，模型上下文中仍保留）' }); continue; }
-      ev.push({ k: 'user', text: text.slice(0, 4000) });
+      ev.push({ k: 'user', text: text.slice(0, 4000), ui: ui++ });
     } else if (m.role === 'assistant') {
       const t = (typeof m.content === 'string' ? m.content : '').trim();
       if (t) ev.push({ k: 'ai', text: t.slice(0, 8000) });
@@ -4760,7 +5969,60 @@ function taskHistoryPayload(task) {
       for (let i = ev.length - 1; i >= 0; i--) { if (ev[i].k === 'tool' && ev[i].result === undefined) { ev[i].result = String(m.content || '').slice(0, 600); break; } }
     }
   }
-  return { type: 'task_history', taskId: task.id, title: task.title, events: ev.slice(-300) };
+  return { type: 'task_history', taskId: task.id, title: task.title, events: ev.slice(-300), canRedo: !!(task.revert && task.revert.messages) };
+}
+// 界面上看得见的用户消息（与 taskHistoryPayload 同一过滤）在 messages 里的下标；回滚/分叉都按它对齐，
+// 不能各自计数（之前分叉只滤 [系统，界面还滤了 [提示 / 压缩摘要，下标会错位）
+function visibleUserIndices(msgs) {
+  const out = [];
+  (msgs || []).forEach((m, i) => {
+    if (!m || m.role !== 'user') return;
+    const text = String(typeof m.content === 'string' ? m.content : (Array.isArray(m.content) ? ((m.content.find(p => p && p.type === 'text') || {}).text || '') : ''));
+    if (/^\[(系统|提示|SYSTEM)/.test(text) || text.startsWith('以下是之前会话的压缩总结')) return;
+    out.push(i);
+  });
+  return out;
+}
+// 每轮用户输入一个文件快照（只记这轮第一次改动前的内容，≤1 MB/文件），跟任务存盘：重启/换浏览器后仍能回滚文件
+const TURN_SNAP_MAX = 40, TURN_SNAP_FILE_MAX = 1 << 20;
+function recordTurnFile(task, rel, oldContent) {
+  const s = task && task._turnSnap; if (!s || rel in s.files) return;
+  s.files[rel] = (oldContent === null || oldContent === undefined) ? null
+    : (String(oldContent).length > TURN_SNAP_FILE_MAX ? { tooLarge: true } : String(oldContent));
+}
+async function _readOrNull(rel) { try { return await fs.readFile(safePath(rel), 'utf8'); } catch { return null; } }
+async function _writeOrDelete(rel, content) {
+  const f = safePath(rel);
+  if (content === null) { try { await fs.unlink(f); } catch {} return; }
+  await fs.mkdir(path.dirname(f), { recursive: true }); await fs.writeFile(f, content, 'utf8');
+}
+// 回滚到第 ui 条可见用户消息之前：删掉它及之后的对话，文件恢复到那一轮开始前；被删的部分留作"撤销回滚"
+async function revertTask(task, ui) {
+  const idx = visibleUserIndices(task.messages)[ui];
+  if (idx === undefined) throw new Error('找不到这条消息（可能已被压缩）');
+  const snaps = (task.turnSnaps || []).filter(s => s.msgIndex >= idx);
+  const earliest = {}, skipped = [];
+  for (const s of snaps) for (const [p, c] of Object.entries(s.files)) if (!(p in earliest)) earliest[p] = c;
+  const redoFiles = {};
+  for (const [p, c] of Object.entries(earliest)) {
+    if (c && c.tooLarge) { skipped.push(p); continue; }
+    redoFiles[p] = await _readOrNull(p);
+    await _writeOrDelete(p, c);
+  }
+  const removed = task.messages.splice(idx);
+  task.revert = { messages: removed, files: redoFiles, snaps, at: Date.now() };
+  task.turnSnaps = (task.turnSnaps || []).filter(s => s.msgIndex < idx);
+  const first = removed[0];
+  const text = String(typeof first.content === 'string' ? first.content : (Array.isArray(first.content) ? ((first.content.find(p => p && p.type === 'text') || {}).text || '') : ''));
+  return { text, messages: removed.length, files: Object.keys(redoFiles).length, skipped };
+}
+async function unrevertTask(task) {
+  const r = task.revert; if (!r) throw new Error('没有可撤销的回滚');
+  for (const [p, c] of Object.entries(r.files || {})) await _writeOrDelete(p, c);
+  task.messages.push(...r.messages);
+  task.turnSnaps = [...(task.turnSnaps || []), ...(r.snaps || [])];
+  task.revert = null;
+  return { messages: r.messages.length, files: Object.keys(r.files || {}).length };
 }
 loadAllTasks();
 
@@ -4788,10 +6050,14 @@ async function execToolWithProgress(name, args, session, ws) {
   const start = Date.now();
   const summary = _summarizeArgs(args);
   try { ws.send(JSON.stringify({ type: 'term', line: `⏳ ${name}(${summary}) …` })); } catch {}
-  let lastTick = start;
+  let lastTick = start, lastTermLine = start;
   const interval = setInterval(() => {
     const sec = ((Date.now() - start) / 1000).toFixed(1);
-    try { ws.send(JSON.stringify({ type: 'term', line: `   …${name} 仍在运行 ${sec}s（可点 ⏹ 随时终止）` })); } catch {}
+    // 长等待只每 60s 写一行终端，避免日志刷屏
+    if (Date.now() - start < 30_000 || Date.now() - lastTermLine >= 60_000) {
+      lastTermLine = Date.now();
+      try { ws.send(JSON.stringify({ type: 'term', line: `   …${name} 仍在运行 ${sec}s（可点 ⏹ 随时终止）` })); } catch {}
+    }
     try { ws.send(JSON.stringify({ type: 'agent_phase', phase: 'tool_exec', detail: `${name} 运行 ${sec}s`, tool: name, elapsed_ms: Date.now() - start })); } catch {}
     lastTick = Date.now();
   }, 2500);
@@ -4801,18 +6067,21 @@ async function execToolWithProgress(name, args, session, ws) {
   // 不保证工具内部响应 abort 信号（很多 fetch 没走 signal）。
   // 用 Promise.race 跟 abortPromise 赛跑：一旦用户点停止，立刻返回【已取消】，
   // 不再等任何慢工具跑完才出环。
+  let _abortSig = null, _onAbort = null;
   const abortPromise = new Promise((resolve) => {
     if (!session.aborter || !session.aborter.signal) return;
     const sig = session.aborter.signal;
     if (sig.aborted) return resolve('__ABORTED__');
-    sig.addEventListener('abort', () => resolve('__ABORTED__'), { once: true });
+    _abortSig = sig; _onAbort = () => resolve('__ABORTED__');
+    sig.addEventListener('abort', _onAbort, { once: true });
   });
   // v0.8.0 工具超时：默认 10 min。可经 TOOL_TIMEOUT_MS 环境变量或 TOOL_TIMEOUT_OVERRIDES[name] 单独配置。
   const TOOL_TIMEOUT_OVERRIDES = {
     foam_run_solver_async: 30_000,   // 这本身只是 spawn，立即返回
     mfix_run_solver_async: 30_000,
-    lbm_run_solver_async: 30_000,
+    lbm_run_async: 30_000,
     foam_solver_status: 15_000,
+    solver_wait: 13 * 3600_000,
     foam_solver_stop: 15_000,
     sim_run_openfoam: 1_800_000,     // 同步求解最长 30 min（建议改用 async）
     run_command: 1_200_000,          // shell 命令最长 20 min
@@ -4849,6 +6118,7 @@ async function execToolWithProgress(name, args, session, ws) {
   } finally {
     clearInterval(interval);
     if (timeoutHandle) clearTimeout(timeoutHandle);
+    if (_abortSig && _onAbort) { try { _abortSig.removeEventListener('abort', _onAbort); } catch {} }
     session._progressPub = prevPub;
   }
 }
@@ -4870,6 +6140,157 @@ OpenFOAM 根目录：${SETTINGS.foamRoot || '(未设置！请先 /api/foam/confi
 - foam_solver_stop(run_id)：终止后台作业。
 - 已有：list_dir / read_file / edit_file / multi_edit / sim_render / sim_run_openfoam（短命令同步用）。
 
+## 🛑 Pre-Flight Check（任何仿真开始前的强制门——违反就必然出问题）
+
+**原则：先评估可行性，再建模，再跑。评估不充分宁可暂停，不能上来就跑。**
+
+这是从 Lu 2017 MTO 复现事故中提炼的教训：用 EMMSscale 曳力模型跑密相启动段，HD 函数在 εg=0.45 返回 0.066（曳力只有 Wen-Yu 的 6.6%），床层静止 15 小时。根因是没有前置评估就直接跑。
+
+### PF-0 · 问题分类（任何仿真任务，建案前必做）
+
+在动手建 case / 改参数 / 跑求解器之前，必须先回答以下问题并写进 deviations.log 或任务备忘：
+
+**物理类型识别**：
+- 什么物理过程？[单相流 / 多相流 / 反应流 / 传热 / 传质 / 颗粒 / 燃烧 / 自由表面 / 多孔介质 / LBM / …]
+- 是否有论文/参考？有 → 走文献核对三遍铁律；无 → 走从零建案风险评估
+
+**工况分类（用无量纲数判断物理区间）**：
+- 多相颗粒流：U/Umf → 固定床(<2) / 鼓泡床(2–10) / 湍动床(10–30) / 快床(>30)
+- 单相流：Re → 层流(<2300) / 过渡 / 湍流(>4000)
+- 传热：Ra → 自然对流强度区间
+- 可压流：Ma → 不可压(<0.3) / 亚音速 / 跨音速 / 超音速
+- LBM：tau → 稳定区间[0.5, 2.0]，u_lb < 0.1
+- **必须明确写出：你的关键无量纲数是多少？这个区间的物理特征是什么？**
+
+**模型适用性评估（最重要的环节）**：
+1. 你选的物理模型是在什么工况/论文下提出、验证的？（文献来源）
+2. 当前工况是否在那个验证范围内？
+3. 如果不在范围内 → 必须说明处理方案（换模型 / blending / 分阶段 / 修改截断参数 / 文献外推）
+4. 不能默默用下去，不能靠猜
+
+**通用模型完整性清单**（全部 ✅ 才能跑）：
+- 通用：求解器名称、时间步长、CFL/稳定判据、写出频率、并行核数
+- 多相/颗粒(TFM)：曳力 + 颗粒粘度 + 颗粒压力 + 摩擦压力 + 恢复系数 + 径向分布函数（6 项全配）
+- 单相湍流：RASModel/LESModel + 壁面函数类型 + y+ 目标值
+- 反应流：反应机理来源 + 组分清单完整性 + 源项注入方式 + 热力学数据
+- 传热：辐射模型 + 对流换热系数 + 热边界条件
+- LBM：碰撞模型(BGK/MRT/TRT/Cumulant) + 边界处理方式 + 力源项 + 格子速度
+
+**配置文件一致性**（建完 case 后、跑前强制核查）：
+- 各文件之间同一参数值是否一致（alphaMax、参考温度、参考压力、物性等）
+- 自定义库是否已加载（controlDict libs / LD_LIBRARY_PATH / CMakeLists）
+- 0/ 或 0.orig/ 初始场是否齐全且 dimensions 正确
+- 不同配置文件是否可能冲突（如 turbulenceProperties 与 phaseProperties 给了不同的同名参数）
+
+### PF-1 · 仿真前置评估报告（格式化输出，不可省略）
+
+**任何新仿真（包括论文复现）开始时，在第 1 次调求解器之前，必须先输出并等待用户确认以下报告：**
+
+\`\`\`
+=== Pre-Flight 仿真评估报告 ===
+
+【物理类型】
+  类型：[单相/多相/反应/传热/颗粒/LBM/…]
+  参考：[论文 Author Year / 教程路径 / 从零建案]
+
+【工况分类】
+  关键参数：[按类型填写：dp/ρ/μ/U 或 Re 或 Ra 或 Ma 或 tau]
+  关键无量纲数：___ = ___
+  流态区间：___ → 该区间的物理特征：___
+
+【模型适用性】
+  选用模型：___
+  该模型验证范围（文献来源）：___
+  当前工况是否在范围内：[是 / 否]
+  若否 → 处理方案：[换模型 / blending / 分阶段 / 截断 / 外推]
+
+【模型完整性】
+  [按物理类型对应的清单逐项列 ✅/❌，全部 ✅ 才继续]
+
+【文件一致性】
+  关键参数跨文件一致性：一致 / 不一致（列出不一致项）
+  自定义库加载：___
+  初始场 0.orig/ 齐全：是 / 否
+
+【偏差登记（写进 deviations.log 的项）】
+  1) DEV-xxx: ...
+  2) ...
+
+【风险评估】
+  高风险项（需特别监控）：
+    - ___
+  第一个检查点（t=___ 或 step=___）监控指标：
+    - ___
+
+以上评估请确认（全部 OK 我才启动求解器）：
+1) 全部 OK，继续
+2) 第 ___ 项需要修改：___
+\`\`\`
+
+numbered options + 问号 → 触发 V4 人在回路，等用户确认后才启动求解器。
+
+### PF-2 · 启动后早期诊断门
+
+求解器启动后，**第一个检查点必须在 t=1τ（1 个停留时间 / 特征时间）或前 100 步**：
+- 核心物理量是否有变化趋势（多相 → alpha mean/Max；单相 → 速度/残差；LBM → 宏观量收敛）
+- 是否出现非物理值（负体积分数 / nan / 发散 / 恒定不变）
+- **若第一个检查点发现物理上不合理的恒定或发散：立即停机**，不要让它跑到 endTime 才发现问题
+
+### PF-3 · 求解器专项清单
+
+**OpenFOAM 多相/颗粒流**：
+- EMMSscale 在 εg<0.47 时 HD≈0.066，密相启动段禁止单独使用 → 改 GidaspowErgunWenYu 或 blending
+- 颗粒本构 7 项全配：drag + viscosityModel + conductivityModel + granularPressureModel + frictionalStressModel + alphaMinFriction + radialModel
+- alphaMinFriction 未设则摩擦模型不激活，密相床会过度压缩到 alphaMax
+- 3D 全几何之前先做 2×2 单元格基准验证模型组合能让床层膨胀
+
+**MFIX**：
+- RUN_TYPE / TSTOP / DT 合理性；MMAX 颗粒相索引从 1 开始
+- TFM 要求 cell >> dp，DEM 要求 cell > 3×dp
+- BC_* 边界类型与流向一致性
+
+**LBM**：
+- tau ∈ [0.5, 2.0]，u_lb < 0.1
+- 碰撞模型稳定性：BGK 高 Re 不稳定 → 换 MRT/Cumulant
+- 壁面边界：bounce-back / Zou-He / extrapolation 适用场景不同
+
+### 🔒 求解器错误预算（Anti-Spin Protocol — 防止在报错案例上无限空转）
+
+**铁律：求解器报错不是让你无限调试的——你有有限次数的修复机会。**
+
+每次求解器（blockMesh / snappyHexMesh / 求解器本体）返回非零退出码或 FATAL ERROR 时，按以下流程：
+
+1. **第 1 次报错**：调 \`diagnose_error\` 读 log tail → 按返回的 next_steps 修 → 重跑
+2. **第 2 次报错（同类）**：停下来，用 \`update_todos\` 登记这条错误为待办，**换一个完全不同的思路**（不是微调参数，而是换方案：如 EMMSscale→GidaspowErgunWenYu、uniform inlet→distributor、3D→2D 先验）
+3. **第 3 次报错（同类）**：**立即停止**。调 \`task_complete({passed:false, memo:"求解器连续 3 次同类报错，需要用户介入。错误摘要：xxx"})\`，把错误根因分析和 3 次尝试的 diff 摘要给用户，让用户决定下一步。
+
+**禁止行为**：
+- 禁止连续 3 次以上以"微调参数"方式修同类错误（如只改 deltaT、只改 tolerance、只改 nNonOrthogonalCorrectors）——这不是修复，是赌博
+- 禁止在没调 \`diagnose_error\` 的情况下直接重跑——你必须先知道上一轮为什么错
+- 禁止把同一个错误"修好后又出现"当新错误处理——同类错误计数累加，不归零
+
+**同类错误判定**：diagnose_error 返回的 category 相同 = 同类（如都是 "mesh_quality"、都是 "divergence"、都是 "boundary_condition"）
+
+**跨类重置**：如果第 2 次错误与第 1 次不同类（category 不同），计数重置为 1，重新开始
+
+**特殊情况**：网格质量修了 2 次后通过 → 不算 3 次，继续跑求解器；求解器又报新的 divergence → 这是新类别，计数从 1 开始。
+
+### 📊 运行健康检查协议（避免浪费机时）
+
+求解器启动后，按以下节奏检查（不要等 endTime 才看）：
+
+| 检查点 | 时机 | 看什么 | 判定 |
+|---|---|---|---|
+| HC-1 | t=1τ 或前 100 步 | 核心物理量趋势 + 残差 | 恒定不变 → 停机诊断 |
+| HC-2 | t=10% endTime | 残差下降趋势 + 物理合理性 | 发散/nan → 停机 |
+| HC-3 | t=50% endTime | 关键 KPI 是否在合理范围 | 偏离 > 50% → 警告用户 |
+| HC-4 | t=90% endTime | 结果是否在收敛 | 未收敛 → 续跑 or 停 |
+
+**HC-1 失败时立即停机**（foam_solver_stop），不要让它白跑到 endTime——这就是 demo3D_dist 浪费 15 小时的教训。
+
+### 🩸 血泪教训登记
+
+**2026-11-10 · demo3D_dist（OpenFOAM + EMMSscale）**：密相床（α_s=0.55）启动，EMMSscale HD(εg=0.45)≈0.066，曳力只有 Wen-Yu 的 6.6%，床层不流化，88 核跑了 15 小时才发现。规则：有 EMMS 的案子 Pre-Flight 必须算初始 εg 下的 HD 值，<0.1 禁止启动。
 ## 🌊 流水式工作流（必须严格按 5 步走）
 
 **第 1 步 · 问意图**
@@ -4903,7 +6324,7 @@ OpenFOAM 根目录：${SETTINGS.foamRoot || '(未设置！请先 /api/foam/confi
   2. **每个 runId 启动后**，**不要立刻接着调** \`foam_solver_status\`。告诉用户：
        「已启动 runId=xxxx。监测面板每 N 秒自动刷新；你也可以让我查询 \`foam_solver_status\`。」
   3. 用户问"现在跑成什么样了"时再调 status；用户说"停"就 \`foam_solver_stop\`。
-  4. 求解器结束后调 \`sim_render\` 出图。
+  4. 求解器结束后调 \`post_view\` 出图（截面 / 剖切 / 等值面 / 流线，按用户要的场和位置）。
 
 ## 重要纪律
 - **回答尽量短**，多用编号清单，不要长段落。
@@ -4942,6 +6363,19 @@ OpenFOAM 根目录：${SETTINGS.foamRoot || '(未设置！请先 /api/foam/confi
      请确认编号。
    \`\`\`
    **绝对不要**自作主张猜一个值就往下走。
+
+## 🔍 几何读图铁律（建几何前必做；正文只给"开孔率 5%"这类简化说法时尤其要做）
+
+教训：中试 DMTO 复现里，正文只写"简化为开孔率 5% 的多孔板"，于是建成了零厚度挡板、把布孔当未知量去反演；
+其实原文 Fig.1 的分布器插图（原图 113×165 像素）画了约 3 圈孔、带厚度（约 40 mm，筛板+烧结板两层）、板下约 35 mm 进气室，
+正文"Z=0.047 m"与图注"Z=0.06 m"也互相矛盾——而近板 3 cm 内的径向剖面对高度极其敏感（min/壁 0.47→0.73）。
+1. 每篇论文先 \`paper_figures(pdf)\` 抽出**原始分辨率**的嵌入图（不是整页渲染），列出所有几何相关的图。
+2. 每张几何图用 \`image_crop(path, box, scale)\` 把部件（分布器/喷嘴/内构件/入口/挡板）放大 4–8 倍后再 \`vision_analyze\`，
+   逐项回答：部件数量（几圈、每圈几个孔）、厚度、高度/间距、与相邻部件的相对位置；**按图中已标注的尺寸换算比例尺**（\`image_crop\` 的 measure 参数给像素距离），给出 ± 不确定度。
+3. 图上看得见、正文没给数的特征（厚度、圈数、孔型）不能当"未知量"随便反演：先按读图值建模，标"读图值 ± 误差"，反演只在读图范围内搜索。
+4. 正文与图注 / 表格对同一量给出不同数值（坐标原点、截面高度、尺寸）时：写进 deviations 作为"口径不确定"，
+   对比指标时把该量的两个取值都算出来报给用户（敏感性），**禁止**挑一个最贴合的值当结论。
+5. 坐标原点必须从图上的尺寸线确认（尺寸线起点 = 哪个面），不要默认"z=0 = 分布板"。
 
 ## 📋 "需要植入的方程 / 算例信息" 强制清单（P2 必输出）
 
@@ -5029,7 +6463,7 @@ OpenFOAM 根目录：${SETTINGS.foamRoot || '(未设置！请先 /api/foam/confi
 - 编译过了再启动验证 case 的 blockMesh→checkMesh→solver。
 
 **P6 · 出图与对比**
-- \`sim_render\` 出最终时刻的关键场（α / U / k / ε），上色看是否定性合理。
+- \`post_view\` 出最终时刻的关键场（α / U / k / ε），看是否定性合理。
 - 若用户给了原论文图，提示用户用相同截面/时刻渲染做对比。
 
 **纪律**
@@ -5267,16 +6701,20 @@ P2 清单 7 大块用户全部回复 OK 之后，**第一个动作**就是写一
   请确认：1) 改 inlet.U / 2) 减 dt / 3) 加 corrector / 4) 换格式
 \`\`\`
 
-**numbered options + 问号 → 自动触发人在回路暂停**。用户确认后：
+**发申报的同时**把这一条追加进 \`<case>/deviations.log.md\`，状态写 PENDING，附证据图（界面给每条 PENDING 显示一张审批卡片，带 evidence 图）：
+  \`\`\`
+  [DEV-001] PENDING inlet.U: (1.5 0 0) → (1.2 0 0)
+    原因：CFL 飙到 8
+    影响：与论文 Re 不再一致，对照 Fig.5 时需说明
+    evidence: figs/courant_inlet.png
+  \`\`\`
+状态词：PENDING 待用户批准 / APPROVED 已批准 / WITHDRAWN 已撤回（改回按原文做了）/ INFO 读图值或原文未给的补值（不是简化）。
 
-- 若用户选"改论文值"：把改动记进 \`<case>/deviations.log.md\`（追加，不覆盖），格式：
-  \`\`\`
-  [DEV-001] 2026-05-17T14:23 inlet.U: (1.5 0 0) → (1.2 0 0)
-    reason: CFL 飙到 8
-    user_approved: yes
-    note: 与论文 Re 不再一致，对照 Fig.5 时需说明
-  \`\`\`
-- 若用户选"不改论文值"：按用户选的备选方案走，**锁文件不动**。
+**numbered options + 问号 → 自动触发人在回路暂停**。用户的决定：
+
+- 卡片上批准：系统已把该条改成 APPROVED 并记下 user_decision，直接执行。对话里批准：由你把该条改成 APPROVED 并注明依据。**用户没有回复时不得自行改成 APPROVED**，保真度门会拦。
+- 不批准（REJECTED）：按原文做，**锁文件不动**，做完把该条标 WITHDRAWN。要求修改（REVISE）：按 user_note 改好，把该条重新标 PENDING 申报。
+- 用户选了不改论文值的备选方案：按该方案走，**锁文件不动**。
 
 ### D. 报错恢复阶梯（BLAME LADDER，按顺序排查，不许跳级）
 
@@ -5373,7 +6811,7 @@ P2 清单 7 大块用户全部回复 OK 之后，**第一个动作**就是写一
    - **绝不**把整个 series 数组贴回聊天，只贴 trends + 最后 5 步。
 
 **M6 · 渲染对比 + VLM 后处理判读（不许只渲染不分析）**
-   - 收敛后 \`sim_render(case_path, field='U')\` 出图。**返回里会有 "📁 已落盘: <path>"**。
+   - 收敛后 \`post_view(case=…, layers=[{type:'slice', field:'U'}])\` 出图：右侧「可视化」自动打开，返回里有各层统计和静态 PNG 路径（可 vision_analyze）。
    - **下一步强制**：\`vision_analyze(images=['<上面那个 path>'], question='...')\` —— 让 VLM 判定：
      ① 流场结构是否物理合理（对称性、回流位置、激波 / 边界层 / 涡）
      ② 量级是否符合预期（U_max ~ U_inf ×几倍？α_water 范围在 0~1？T 范围合理？）
@@ -5426,7 +6864,8 @@ P2 清单 7 大块用户全部回复 OK 之后，**第一个动作**就是写一
       - 跑完 → \`opt_extract_kpi({case_path:trial_dir, method:..., ...})\` 拿 KPI
           - regex 方法：\`{method:'regex', file:'log.solver', pattern:'gas holdup\\\\s*=\\\\s*([0-9.eE+-]+)'}\`
           - pvpython：用户给一个 .py 脚本，约定**最后一行 print(数字)** 或 \`print(json.dumps({"kpi":val}))\`
-      - \`opt_record_result({study_id, trial_id, value:kpi, state:'COMPLETE'})\`
+      - 新 study 必须提供固定 pipeline 合同（stages + acceptance，含独立留出指标）；用 \`opt_run_trial({study_id, trial_id})\` 执行隔离流水线，不要手动拼接旧结果。
+      - 只有流水线 passed=true 才能 \`opt_record_result({study_id, trial_id, value, evidence_path, state:'COMPLETE'})\`；失败记录 FAIL，不可降低阈值或用旧结果代替。
       - **如果 solver 发散/网格失败/超时**：state='FAIL'，不要硬填一个垃圾值进去。Optuna 会自动忽略。
 
    4) **监测（每 5 trial）**
@@ -5479,24 +6918,87 @@ const _FOAM_SECTIONS = (() => {
     let topic = 'core';
     if (/论文|植入|文献|方程|反漂移|ANTI-?DRIFT|复现/i.test(head)) topic = 'paper';
     else if (/\bSTL\b|网格自动化/i.test(head)) topic = 'stl';
+    else if (/错误排查协议|ERROR DIAGNOSIS/i.test(head)) topic = 'error';
     return { topic, head, text };
   });
 })();
-function foamPromptFor(taskText) {
+// 检索化注入：专题段只在需要时发。STL 段只认真正的 STL/snappy/外部几何（blockMesh 绕流不需要）；
+// 错误排查协议只在本会话出现过报错后才发（hadError），没出错时每步省 ~7 KB。
+// 交互式 5 步流程（先问意图、一次问一项）在用户已给完整任务时只会拖慢；精简版改成"信息够就直接做"，
+// 并加入求解提速的领域经验（只在任务没有限定对应参数时才用）
+const FOAM_LEAN_CORE = {
+  '🌊 流水式工作流': `## 工作流
+- 用户没给算例也没给工况时才问；任务描述已经给全（几何、工况、求解器、要输出什么）就直接做，不再逐项确认。
+- 先找最接近的 tutorial（foam_find_tutorial / $FOAM_TUTORIALS），foam_clone_tutorial 拷过来改，比从零写字典快且少错。
+- 顺序：改字典 → blockMesh（+ setFields）→ foam_mesh_verify → foam_run_solver_async 后台求解（返回里已含启动检查：是否进入时间步）→ solver_wait 一次等到结束 → 后处理 → 数值核验 → result/汇报 → task_complete。不要再做短时探测等待或 foam_solver_status 轮询。
+- 启动前逐项核对工况：clone 返回的「启动前体检」列出 0/ 下初始 T、p——教程模板常是 600 K 等非常温值，任务给的温度/压力不同就先改（求解中途才发现要停机重算）。adjustTimeStep 开着时 writeControl 必须 adjustableRunTime，否则最终时刻的场目录不会写出。
+- 求解前就把结果需要的函数对象（forceCoeffs、surfaceFieldValue、probes…）写进 controlDict；时均 KPI 用 foam_postproc_stats(…, write_json) 直接得出，不必另写积分脚本。确需写 Python：用 np.trapezoid（np.trapz 在 numpy 2 已弃用），不要用 sed 改 Python 源码。
+- 已经得到并核验过的结果不要重算；停求解器用 foam_solver_stop（会确认进程全部退出后再返回），不必再 pgrep/ps 自查。
+## 求解提速（任务没限定的参数才动；任务写死的 dt/网格/核数一律照办）
+- 时间步：任务没限定 dt 时用 adjustTimeStep yes + maxCo 0.5–0.9（多相再加 maxAlphaCo），比教程的小固定 dt 快很多；任务写了"固定 dt"就不要改。
+- 写盘：writeInterval 取够用的最大值、purgeWrite 保留少量时间步；函数对象 writeControl 不必每步。
+- 并行：几万单元以下的 2D 网格，4–8 核就到头了，再多核反而更慢（通信占主导）。核数上限比单个算例需要的多时，把多出来的核分给其他独立算例同时跑。
+- 多个独立算例（网格无关性、参数扫描、多工况）：先把每个都准备好，然后用 foam_run_solver_async 一起后台启动，各自 cd 到自己的目录，核数总和不超过上限；再用 solver_wait(run_ids=[…], mode="all") 一次等全部结束。不要一个跑完再开下一个。
+- 多相欧拉求解器（twoPhaseEulerFoam 等）的 nOuterCorrectors 不要为了提速往下调：调到 1 会快将近 3 倍，但床层压降会偏差 8% 以上。
+- 用 solver_wait 等，不用 sleep 轮询；求解器一结束就继续。
+`,
+  '重要纪律': `## 出图（post_view 规则）
+- 用户说"给我看 / 画 / 出一张 …… 截面 / 云图 / 流线 / 等值面"时直接调 \`post_view\`，不要先问参数：不知道场名就先只传 case 拿场列表，位置按用户说的坐标（米）填 position，没说就用默认。
+- 出图后用一两句话报数值（范围、平均），不要描述颜色。
+
+## 纪律
+- 回答尽量短。长任务一律 foam_run_solver_async，不用同步 sim_run_openfoam。
+- foamRoot 未设时先提示用户在 "OpenFOAM (Beta)" 面板填写。
+`,
+};
+// 出过错后注入的排查要点（原协议 6.8 KB，里面大段是老 M5–M7 流程，和现在的 solver_wait 工作流冲突）
+const FOAM_ERROR_LEAN = `
+## 报错排查
+- 先看 log 不看场：diagnose_error(text=日志尾的错误段) 拿 category/next_steps；foam_solver_status / tail -100 log.* 看第一处报错。
+- 场文件、polyMesh 不要整文件 read_file（几十万行）；用 foamDictionary <file> -entry internalField | head -5、grep -c nan 之类的命令。
+- 对号入座：FPE/NaN → 时间步、BC、初值、物性为 0；残差不降 → fvSolution 松弛与非正交修正、checkMesh；dict keyword 报错 → 对照同求解器 tutorial；
+  BC/维度不匹配 → foam_inspect_case；MPI/分解 → numberOfSubdomains 与 -np、重跑 decomposePar -force；发散位置 → foam_locate。
+- 一次改一处，改完重启前确认旧作业已停（foam_solver_stop 会确认）；同一报错修 3 次不好就回滚到上一个能跑的快照重新规划。
+- 求解器打印 End 之后的 abort/exit 134 不是错误，结果有效，不要重算。
+`;
+const _FOAM_WANT_STL = /\bstl\b|snappy|翼型|aerofoil|airfoil|车身|建筑|building|\bcad\b|step 文件|外部几何|几何文件/i;
+function foamPromptFor(taskText, opts = {}) {
   const t = String(taskText || '');
-  if (!t.trim()) return FOAM_PROMPT;  // 不知道任务文本 → 全量注入（安全兜底）
-  const wantPaper = /论文|复现|植入|paper|文献|reproduce|方程|algorithm|drag\b|湍流模型|turbulence model|closure|fvoption|coded/i.test(t);
-  const wantStl   = /\bstl\b|snappy|绕流|外流|网格|\bmesh\b|blockmesh|几何|翼型|aerofoil|airfoil|外形|车身|建筑|building|inlet.*outlet/i.test(t);
+  // 完全不知道任务文本（新会话还没收到任何用户消息）→ 全量注入；有任务文本时走下面的检索化注入
+  if (!t.trim() && !opts.lean) return FOAM_PROMPT;
+  const wantPaper = _WANT_PAPER_RE.test(t) || /湍流模型|turbulence model/i.test(t);
+  const wantStl   = _FOAM_WANT_STL.test(t);
+  const wantError = opts.hadError !== false;
   const out = [];
   for (const s of _FOAM_SECTIONS) {
-    if (s.topic === 'core') out.push(s.text);
+    const leanKey = process.env.LEAN_PROMPT === '0' ? null : Object.keys(FOAM_LEAN_CORE).find(k => s.head.startsWith(k));
+    if (s.topic === 'core' && leanKey) out.push(FOAM_LEAN_CORE[leanKey]);
+    else if (s.topic === 'core') out.push(s.text);
     else if (s.topic === 'paper' && wantPaper) out.push(s.text);
     else if (s.topic === 'stl' && wantStl) out.push(s.text);
+    else if (s.topic === 'error' && wantError) out.push(process.env.LEAN_PROMPT === '0' ? s.text : FOAM_ERROR_LEAN);
   }
   let extra = '';
   if (!wantPaper) extra += '\n\n（📌 检索化注入：本任务未识别为「论文复现/算法植入」，已省略文献三遍核对/参数锁/反漂移协议等专题段以聚焦。若实为论文复现请明示，我会启用完整核对闭环。）';
   if (!wantStl)   extra += '\n（📌 本任务未识别为「STL→网格」，已省略 STL 网格自动化专题段。若提供了 STL 几何请明示。）';
+  if (!wantError) extra += '\n（📌 本会话尚无报错，错误排查协议未注入；一旦出现 FATAL/非零退出码会自动注入。先用 diagnose_error 匹配报错模式。）';
   return out.join('\n') + extra;
+}
+// 本会话是否出现过报错（工具结果里有 FATAL / 非零退出码 / Traceback 等）
+function sessionHadError(s) {
+  for (const m of (s.messages || [])) {
+    if (m.role !== 'tool') continue;
+    const c = typeof m.content === 'string' ? m.content : '';
+    if (/FOAM FATAL|FATAL ERROR|Traceback \(most recent|Floating point exception|Segmentation fault|^ERROR[: ]|\berror: /m.test(c)) return true;
+    // 非零退出：exit 1 且几乎没输出多半是 grep/test 没匹配上，不算报错；其余要有报错字样或退出码 ≥ 2
+    const ex = /\[退出码 (\d+)\]/.exec(c);
+    if (ex && ex[1] !== '0' && !/已打印 End|计算正常完成/.test(c)) {
+      const body = c.slice(ex.index + ex[0].length).trim();
+      if (Number(ex[1]) >= 2 || /error|fatal|cannot|not found|no such|failed|abort|segmentation|错误|失败/i.test(body)) return true;
+      if (ex[1] === '1' && body.length > 400) return true;
+    }
+  }
+  return false;
 }
 
 const MFIX_PROMPT = `
@@ -5684,34 +7186,14 @@ async function mfixInspectCase(casePath) {
   if (allFiles.length > 400) out.push('  … (已截断，超过 400 项)');
   return out.join('\n');
 }
-async function mfixRunSolverAsync({ case_path, command }, ws) {
+async function mfixRunSolverAsync({ case_path, command }, ws, session) {
   if (!case_path) throw new Error('case_path 必填');
   const cd = path.isAbsolute(case_path) ? case_path : path.resolve(WORKSPACE, case_path);
   const cmd = (command && command.trim()) || 'mfixsolver';
-  const runId = crypto.randomBytes(4).toString('hex');
-  const isWin = IS_WIN;
-  let shell, shellArgs;
-  if (isWin) {
-    if (SETTINGS.mfixBash) shellArgs = ['/c', `call "${SETTINGS.mfixBash}" && cd /d "${cd}" && ${cmd}`];
-    else                   shellArgs = ['/c', `cd /d "${cd}" && ${cmd}`];
-    shell = 'cmd.exe';
-  } else {
-    const sourceLine = SETTINGS.mfixBash ? `source "${SETTINGS.mfixBash}"` : `true`;
-    shell = 'bash'; shellArgs = ['-c', `cd "${cd}" && (${sourceLine}); ${cmd}`];
-  }
-  const proc = spawn(shell, shellArgs, { cwd: cd });
-  const run = { runId, proc, casePath: cd, command: cmd, log: [], started: Date.now(), ended: 0, exitCode: null, subs: new Set(), kind: 'mfix' };
-  SOLVER_RUNS.set(runId, run);
-  const onData = d => {
-    const s = d.toString();
-    s.split(/\r?\n/).forEach(l => { if (l) { run.log.push(l); if (run.log.length > 4000) run.log.splice(0, run.log.length - 4000); } });
-    for (const sub of run.subs) if (sub.readyState === 1) sub.send(JSON.stringify({ type: 'solver_log', runId, lines: s.split(/\r?\n/).filter(Boolean) }));
-  };
-  proc.stdout.on('data', onData); proc.stderr.on('data', onData);
-  proc.on('close', code => { run.ended = Date.now(); run.exitCode = code;
-    for (const sub of run.subs) if (sub.readyState === 1) sub.send(JSON.stringify({ type: 'solver_done', runId, exitCode: code })); });
-  proc.on('error', err => { run.ended = Date.now(); run.exitCode = -1; run.log.push('[启动失败] ' + err.message); });
-  if (ws) run.subs.add(ws);
+  let inner;
+  if (IS_WIN) inner = SETTINGS.mfixBash ? `call "${SETTINGS.mfixBash}" && cd /d "${cd}" && ${cmd}` : `cd /d "${cd}" && ${cmd}`;
+  else inner = `cd "${cd}" || exit 97; ${SETTINGS.mfixBash ? `source "${SETTINGS.mfixBash}"` : 'true'}; ${cmd}`;
+  const { runId } = spawnTrackedRun({ kind: 'mfix', cd, command: cmd, inner, ws, session });
   return `[已启动 MFIX 求解器]\n  runId: ${runId}\n  case:  ${cd}\n  cmd:   ${cmd}\n请在"求解器监测"面板订阅 runId=${runId}，或调用 mfix_solver_status(${runId})。`;
 }
 function mfixSolverStatus(runId) {
@@ -5743,8 +7225,8 @@ function mfixSolverStop(runId) {
   const run = SOLVER_RUNS.get(runId);
   if (!run) return '[未知 runId]';
   if (run.ended) return '[已结束]';
-  try { run.proc.kill('SIGTERM'); } catch {}
-  setTimeout(() => { try { run.proc.kill('SIGKILL'); } catch {} }, 3000);
+  run._userStopped = true; killRunTree(run);
+  setTimeout(() => { if (!run.ended) killRunTree(run, true); }, 3000);
   return `[已发送终止信号 runId=${runId}]`;
 }
 
@@ -5863,27 +7345,13 @@ async function lbmInspectCase(casePath, algorithmHint = '') {
   out.push(...allFiles.map(f => '  ' + f));
   return out.join('\n');
 }
-async function lbmRunAsync({ case_path, command }, ws) {
+async function lbmRunAsync({ case_path, command }, ws, session) {
   if (!case_path) throw new Error('case_path 必填');
   const cd = path.isAbsolute(case_path) ? case_path : path.resolve(WORKSPACE, case_path);
   const cmd = (command && command.trim()) || (SETTINGS.lbmRunCmd && SETTINGS.lbmRunCmd.trim());
   if (!cmd) throw new Error('未提供 command 且 SETTINGS.lbmRunCmd 为空。请提供运行命令或在面板填默认模板。');
-  const runId = crypto.randomBytes(4).toString('hex');
-  const shell = IS_WIN ? 'cmd.exe' : 'bash';
-  const shellArgs = IS_WIN ? ['/c', `cd /d "${cd}" && ${cmd}`] : ['-c', `cd "${cd}" && ${cmd}`];
-  const proc = spawn(shell, shellArgs, { cwd: cd });
-  const run = { runId, proc, casePath: cd, command: cmd, log: [], started: Date.now(), ended: 0, exitCode: null, subs: new Set(), kind: 'lbm' };
-  SOLVER_RUNS.set(runId, run);
-  const onData = d => {
-    const s = d.toString();
-    s.split(/\r?\n/).forEach(l => { if (l) { run.log.push(l); if (run.log.length > 4000) run.log.splice(0, run.log.length - 4000); } });
-    for (const sub of run.subs) if (sub.readyState === 1) sub.send(JSON.stringify({ type: 'solver_log', runId, lines: s.split(/\r?\n/).filter(Boolean) }));
-  };
-  proc.stdout.on('data', onData); proc.stderr.on('data', onData);
-  proc.on('close', code => { run.ended = Date.now(); run.exitCode = code;
-    for (const sub of run.subs) if (sub.readyState === 1) sub.send(JSON.stringify({ type: 'solver_done', runId, exitCode: code })); });
-  proc.on('error', err => { run.ended = Date.now(); run.exitCode = -1; run.log.push('[启动失败] ' + err.message); });
-  if (ws) run.subs.add(ws);
+  const inner = IS_WIN ? `cd /d "${cd}" && ${cmd}` : `cd "${cd}" && ${cmd}`;
+  const { runId } = spawnTrackedRun({ kind: 'lbm', cd, command: cmd, inner, ws, session });
   return `[已启动 LBM 作业]\n  runId: ${runId}\n  case:  ${cd}\n  cmd:   ${cmd}\n请在"求解器监测"面板订阅 runId=${runId}，或调用 lbm_solver_status(${runId})。`;
 }
 function lbmSolverStatus(runId) {
@@ -5914,8 +7382,8 @@ function lbmSolverStop(runId) {
   const run = SOLVER_RUNS.get(runId);
   if (!run) return '[未知 runId]';
   if (run.ended) return '[已结束]';
-  try { run.proc.kill('SIGTERM'); } catch {}
-  setTimeout(() => { try { run.proc.kill('SIGKILL'); } catch {} }, 3000);
+  run._userStopped = true; killRunTree(run);
+  setTimeout(() => { if (!run.ended) killRunTree(run, true); }, 3000);
   return `[已发送终止信号 runId=${runId}]`;
 }
 
@@ -5987,9 +7455,80 @@ const SKILL_PROMPT_BLOCK = `
 3. **对比裁决**：调 \`skill_eval_compare(task='案例描述')\`，系统自动比对两臂的 verifier 通过率 / 错误迭代次数 / 是否注入技能，给出"技能是否真有帮助"的结论。
 - 铁律：两臂的 task 必须**一致**才可比；案例要有一定难度（太简单两臂都满分、区分不出）。`;
 
+// 精简基础提示（学 OpenCode：固定开销小，细则交给工具描述和工具返回）。按 "\n# " 切节，
+// 长节换成等价短版；论文专用节只在任务像论文复现时保留。LEAN_PROMPT=0 恢复全文。
+const LEAN_BASE_SECTIONS = {
+  '重要：运行代码的规则': '# 运行代码\n- 用户要跑什么就直接 run_command；缺依赖 pip install 也走 run_command。\n',
+  '⚡ 核心工作守则': '# 核心守则\n1. 动手不空谈：要改文件就调 write_file/edit_file，要跑就调 run_command；每轮至少调一个工具，不在聊天里贴大段代码。\n2. 小步走：每轮只决定下一个动作，拿到真实结果再想下一步。\n3. 不确定就查（list_dir/read_file/run_command），别猜。\n4. 需求有多种解释且缺关键信息时才问；用户说了不要问就自己按最合理的解释做。\n5. 改动克制，完成后用 *_verify 或数值检查核验，再调 task_complete。\n6. 长作业用 foam_run_solver_async 放后台，用 solver_wait 等结束（不要 sleep 轮询，不要在 run_command 里 nohup … &）。\n',
+  '联网工具': null,
+  '🔴 图像分析铁律': '# 看图\n你看不见图片像素：任何关于图的结论都要先调 vision_analyze 或对应 *_verify；问具体问题（位置、数值、是否发散），把 VLM 结论贴出来。\n',
+  '🔴 公式书写铁律': '# 公式\n聊天里的公式用 LaTeX（行内 $...$，独立 $$...$$，希腊字母用 \\rho 等命令）；代码块和 OpenFOAM 字典里保持 ASCII。\n',
+  '长程任务': '# 长程任务\n复杂任务先 update_todos 拆可验证的待办，完成一项勾一项，全部完成才 task_complete。\n',
+  '规则': '# 规则\n- 优先 edit_file；中文回答、中文注释。\n',
+  '网格自动核对闭环': '# 网格核对\n- blockMesh/snappyHexMesh 之后先 foam_mesh_verify，pass=false 就修字典重跑（3 次失败后 foam_mesh_plan 降档）；snappy 前先 foam_stl_render，之后 foam_patch_diff 确认 patch。\n',
+  'v0.6.0 自治可靠性': '# 可靠性\n- 返回 [SCHEMA_INPUT_ERROR] 就按提示改参数重试；返回 [WATCHDOG_HALT] 立刻停下汇报。\n- 多阶段长任务可用 run_stage_start / run_stage_done 记录阶段；服务重启后先 run_status_load 看在跑的作业。\n',
+};
+// 与 _WANT_PAPER_TOOLS_RE 保持一致（这里单独写一份：测试按源码片段加载提示词段）
+const _WANT_PAPER_RE = /论文|\bpaper\b|复现|reproduc|植入|implement(?:ing)? (?:the )?(?:model|equation)|方程|algorithm|算法|closure|曳力|drag model|drag\b|源项|source term|fvoption|coded|\.pdf\b|读论文|论文原文|按原文|重现|重新做|这篇(?:文献|文章)|(?:照着?|按照?|依照|根据)[^\n，。]{0,10}(?:文献|文章)/i;
+function leanSystemBase(full, taskText) {
+  if (process.env.LEAN_PROMPT === '0') return full;
+  const wantPaper = _WANT_PAPER_RE.test(String(taskText || ''));
+  const parts = full.split(/\n(?=# )/);
+  const out = [];
+  for (const part of parts) {
+    const head = (part.match(/^# (.+)$/m) || [, ''])[1];
+    if (/^文献工作流/.test(head)) { if (wantPaper) out.push(part); continue; }
+    const key = Object.keys(LEAN_BASE_SECTIONS).find(k => head.startsWith(k));
+    if (key === undefined) { out.push(part); continue; }
+    if (LEAN_BASE_SECTIONS[key]) out.push(LEAN_BASE_SECTIONS[key]);
+  }
+  return out.join('\n');
+}
+// V8 全局规则 / 技能块的精简版：git 回滚与报错诊断保留要点；算法植入四步法只在论文/算法任务注入；
+// 技能 A/B 检验模式只在用户提到技能评测时注入
+const V9_LEAN = `
+
+## 全局规则
+- 文件改动自动 git 快照（返回里有 [V8 git]）。同一报错连修 3 次不好 → git_log_recent 找上一个能跑的快照，git_revert_to 回滚再重新规划。
+- 工具返回 FOAM FATAL / 非零退出 / nan / segfault → 先 diagnose_error(text=错误段)，按 next_steps 做。
+- 复杂任务先 update_todos 列计划，关键阶段后挂一个验证（网格 foam_mesh_verify、结果用数值或 *_verify 核验）；未通过验证的阶段不标完成。
+`;
+const SKILL_LEAN = `
+
+# 经验
+- 若上方注入了「📚 领域经验」，直接参考，仍要核验本案结果。
+- 任务跑通并核验后，task_complete 前可调 skill_save 沉淀做法（recipe/key_params/pitfalls/triggers）；修好 diagnose_error 没覆盖的新报错后可调 learn_error_pattern。
+`;
+function leanV9Block(taskText) {
+  if (process.env.LEAN_PROMPT === '0') return V9_PROMPT_BLOCK;
+  if (_WANT_PAPER_RE.test(String(taskText || ''))) {
+    const a = V9_PROMPT_BLOCK.indexOf('### 算法植入四步法'); const b = V9_PROMPT_BLOCK.indexOf('### 前置计划');
+    return V9_LEAN + '\n' + V9_PROMPT_BLOCK.slice(a, b);
+  }
+  return V9_LEAN;
+}
+function leanSkillBlock(taskText) {
+  if (process.env.LEAN_PROMPT === '0' || /技能|skill|评测|A\/B/i.test(String(taskText || ''))) return SKILL_PROMPT_BLOCK;
+  return SKILL_LEAN;
+}
+
+// 本轮用于检索化注入的任务文本：当前用户输入 → 任务持久化的首条需求 → 历史里第一条用户消息
+// （自动唤醒 / 重启恢复时没有 _pendingUserText，之前会退化成全量 FOAM_PROMPT）
+function taskTextOf(s) {
+  if (s._pendingUserText) return s._pendingUserText;
+  if (s.task && s.task.taskText) return s.task.taskText;
+  if (s.task && s.task.fidelity && s.task.fidelity.taskText) return s.task.fidelity.taskText;
+  for (const m of (s.messages || [])) {
+    if (m.role !== 'user') continue;
+    const c = typeof m.content === 'string' ? m.content : Array.isArray(m.content) ? m.content.map(x => x && x.text || '').join(' ') : '';
+    if (c.trim() && !/^\[(唤醒|自动|引导|系统)/.test(c.trim())) return c;
+  }
+  return '';
+}
 function buildSystemPrompt(s) {
-  let p = SYSTEM_PROMPT_BASE(WORKSPACE);
-  if (s.foamMode) p += foamPromptFor(s._pendingUserText || '');
+  const tt = taskTextOf(s);
+  let p = leanSystemBase(SYSTEM_PROMPT_BASE(WORKSPACE), tt);
+  if (s.foamMode) p += foamPromptFor(tt, { hadError: sessionHadError(s) });
   if (s.mfixMode) p += MFIX_PROMPT;
   if (s.lbmMode)  p += LBM_PROMPT;
   if (s.customMode && SETTINGS.customPrompt && SETTINGS.customPrompt.trim()) {
@@ -5997,10 +7536,17 @@ function buildSystemPrompt(s) {
     const root = SETTINGS.customRoot ? `根目录：${SETTINGS.customRoot}\n` : '';
     p += `\n\n========== 已启用《${name}》工作流（用户自定义 Beta）==========\n${root}${SETTINGS.customPrompt.trim()}\n========== 工作流定义结束 ==========\n`;
   }
-  p += V9_PROMPT_BLOCK;  // v0.9.0 (V8) 全局规则
-  p += SKILL_PROMPT_BLOCK;
+  p += leanV9Block(tt);  // v0.9.0 (V8) 全局规则（按需精简）
+  p += leanSkillBlock(tt);
+  p += (typeof _packIndex !== 'undefined' ? _packIndex.text : '');
+  const _t = s.task || {};
+  if (_t.agentMode === 'plan') p += '\n\n# 🗺 当前为【规划模式】\n只读：可读文件、查论文、检查算例、读后处理数据、看图；写文件/跑命令/启动求解器/改参数的工具已被屏蔽。\n输出：①问题与已知事实 ②分步方案（网格/模型/边界/求解/后处理/验收指标）③风险与核算（核数、物理时长、预计耗时）④需要用户决定的点。用户切到【执行模式】后再动手。\n';
+  if (_t.goal && _t.goal.status === 'active') p += `\n\n# 🎯 会话目标（持续推进直到达成 / 阻塞 / 用户停止）\n${_t.goal.text}\n${_t.goal.criteria ? '验收标准（逐条给出数值证据才算达成）：\n' + _t.goal.criteria + '\n' : ''}达成后调用 task_complete，summary 里逐条列验收证据；确实阻塞时说明阻塞原因并向用户提问。\n`;
   // 自进化：按当前任务文本检索已验证技能，排序+封顶后注入（无命中则为空）
-  try { const inj = SkillLib.injectionFor(s._pendingUserText || '', { foam: s.foamMode, mfix: s.mfixMode, lbm: s.lbmMode }); if (inj) p += inj; } catch {}
+  try { const inj = SkillLib.injectionFor(tt, { foam: s.foamMode, mfix: s.mfixMode, lbm: s.lbmMode }); if (inj) p += inj; } catch {}
+  try { p += Fidelity.lessonsFor(tt); } catch {}
+  try { p += Evolve.injectionFor(((s.task && s.task.fidelity && s.task.fidelity.taskText) || '') + '\n' + tt); } catch {}
+  try { const hs = Fidelity.holds(s); if (hs.length) p += `\n\n# ⛔ 保真度门未解除（求解/收尾会被拦截）\n${hs.map(h => `- [${h.key}] ${h.label}: ${h.detail}`).join('\n')}\n先按原文修正，或发偏离申报等用户批准。\n`; } catch {}
   // 结构化工作记忆（pinned · 不随上下文压缩丢失 · 本任务的硬事实）
   try {
     const wm = s.workMem;
@@ -6032,8 +7578,10 @@ function captureToolSignal(session, name, result, args = {}) {
     if (!wm.pitfalls) wm.pitfalls = [];
     const txt = String(result || '');
     if (/_verify$/.test(name) || name === 'paper_param_verify') {
-      const passed = /passed\s*[=:]\s*true/i.test(txt);
-      const failed = /passed\s*[=:]\s*false/i.test(txt);
+      // 各 verifier 输出格式不一：{passed:true} / "pass": true / 首行 ✓ [mesh_verify/...] 通过
+      const head = /^\s*([✓✗])\s*\[/.exec(txt);
+      const passed = head ? head[1] === '✓' : /"?pass(?:ed)?"?\s*[=:]\s*true/i.test(txt);
+      const failed = head ? head[1] === '✗' : /"?pass(?:ed)?"?\s*[=:]\s*false/i.test(txt);
       session.verifyState = session.verifyState || {};
       if (passed) {
         session.verifyState[name] = 'pass';
@@ -6044,7 +7592,14 @@ function captureToolSignal(session, name, result, args = {}) {
         if (!wm.failedVerifiers.includes(name)) wm.failedVerifiers.push(name);
       }
     }
+    try { Evolve.onTool(session, name, args, txt); } catch {}
     if (name === 'case_probe_facts') wm.facts = txt.replace(/^\[case_probe_facts[^\n]*\n/, '').slice(0, 1200);
+    if (name !== 'diagnose_error' && /FOAM FATAL|FOAM FATAL IO ERROR|Segmentation fault|sigFpe|Traceback \(most recent/.test(txt)) {
+      const i = txt.search(/FOAM FATAL|Segmentation fault|sigFpe|Traceback \(most recent/);
+      const snip = txt.slice(Math.max(0, i - 80), i + 400);
+      const novel = (session._novelErrors = session._novelErrors || []);
+      if (!diagnoseErrorText(snip).matched && !novel.some(e => e.slice(0, 120) === snip.slice(0, 120))) { novel.push(snip); if (novel.length > 5) novel.shift(); }
+    }
     if (name === 'run_stage_start') { const m = txt.match(/stage=([\w-]+)/); if (m) wm.stage = m[1]; }
     if (name === 'run_stage_done') { const m = txt.match(/stage=([\w-]+)\s+status=([\w-]+)/); if (m) wm.stage = m[1] + ':' + m[2]; }
     // ---- V10 工作记忆扩展：算例路径 / 求解器 / 关键参数 / 踩过的坑 ----
@@ -6076,18 +7631,11 @@ function workMemToSkillFill(session) {
   };
 }
 
-async function runAgent(ws, userText, attachments) {
+async function runAgent(ws, userText, attachments, { resume = false } = {}) {
   const session = sessions.get(ws);
   if (!session) { console.warn('[runAgent] no session for ws'); return; }
   if (session._running) {
-    const prevSeq = session._runSeq;
-    console.warn(`[runAgent] previous run #${prevSeq} still in flight, aborting it before starting new one`);
-    try { ws.send(JSON.stringify({ type: 'term', line: `[诊断] 上一轮 #${prevSeq} 仍在运行，先中断它（v0.7.4 并发守卫）` })); } catch {}
-    session.aborted = true;
-    if (session.aborter) try { session.aborter.abort(); } catch {}
-    const t0 = Date.now();
-    while (session._running && Date.now() - t0 < 3000) { await new Promise(r => setTimeout(r, 50)); }
-    if (session._running) console.warn('[runAgent] previous run did not exit within 3s, proceeding anyway');
+    return;
   }
   session._runSeq = (session._runSeq || 0) + 1;
   const myRunSeq = session._runSeq;
@@ -6097,39 +7645,73 @@ async function runAgent(ws, userText, attachments) {
   if (task) {
     const other = task._runningSession;
     if (other && other !== session && other._running) {
-      const otherAlive = other._ws && other._ws.readyState === 1;
-      if (otherAlive) {
-        session._running = false;
-        try { ws.send(JSON.stringify({ type: 'term', line: '[任务] 该任务正在另一个窗口运行，请先在那边停止' })); } catch {}
-        try { ws.send(JSON.stringify({ type: 'agent_end' })); } catch {}
-        return;
-      }
-      // 旧连接已断（刷新遗留）→ 中止它，接管任务
-      other.aborted = true;
-      if (other.aborter) try { other.aborter.abort(); } catch {}
-      const t0g = Date.now();
-      while (other._running && Date.now() - t0g < 3000) { await new Promise(r => setTimeout(r, 50)); }
+      session._running = false;
+      return;
     }
     task._runningSession = session;
+    try { broadcastTaskState(); } catch {}
   }
-  newCheckpoint(session, userText.slice(0, 40) || '新任务');
-  broadcastCheckpoints(ws);
-  const userContent = await buildUserContent(userText, attachments);
-  session.messages.push({ role: 'user', content: userContent });
+  const recoveryVersion = task ? recoveryManager.version(task) : 0;
+  if (!resume) {
+    newCheckpoint(session, userText.slice(0, 40) || '新任务');
+    broadcastCheckpoints(ws);
+    if (task) {
+      // 新输入：之前的"撤销回滚"作废（与 OpenChamber 相同）；记录本轮文件快照的起点
+      if (task.revert) task.revert = null;
+      task.turnSnaps = (task.turnSnaps || []).slice(-39);   // 与 TURN_SNAP_MAX 一致（测试按函数片段加载，这里不引用常量）
+      task._turnSnap = { msgIndex: session.messages.length, ts: Date.now(), files: {} };
+      task.turnSnaps.push(task._turnSnap);
+    }
+    const userContent = await buildUserContent(userText, attachments);
+    session.messages.push({ role: 'user', content: userContent });
+  }
   session.aborter = new AbortController();
   session.aborted = false; session.taskComplete = false;
   // verifier 硬门：每个任务尝试独立计数，开跑清掉上一任务的 FAIL 记录（避免误拦新任务）
-  session.verifyState = {};
-  if (session.workMem) session.workMem.failedVerifiers = [];
+  if (!resume) {
+    session.verifyState = {};
+    if (session.workMem) session.workMem.failedVerifiers = [];
+    // A5 fix: 新任务清掉 question mute 污染（防止跨任务继承超时计数）
+    session._qMuteNoted = false;
+    session._choiceTimeouts = 0;
+  }
   ws.send(JSON.stringify({ type: 'agent_start' }));
   console.log(`[runAgent #${myRunSeq}] started`);
 
   try {
     let nudgeCount = 0;
     let noToolStreak = 0;       // 连续「只输出文字、没调任何工具」的轮数 → 反空转守卫
+    let completionNudge = 0;    // 完成门：工具执行完但未 task_complete → 最多 1 次催促
     // 循环安全卫士：最近 N 个工具调用指纹 (name + args hash)。连续同指纹 >= 5 调则硬断，>=3 插入纠正提示。
     const recentFP = [];        // 循环调用指纹序列
     let warnedDup = false;       // 重复提醒只插一次
+    // 🔒 Anti-Spin Protocol: 求解器错误预算 — 同类错误连续 3 次强制停下交用户
+    session._solverErrCount = session._solverErrCount || 0;
+    session._solverErrCategory = session._solverErrCategory || null;
+    function resetSolverErrBudget() { session._solverErrCount = 0; session._solverErrCategory = null; session._solverErrSeen = null; }
+    // HC-4: 求解器类工具结果 → 同类错误计数；成功推进则清零。返回 true 表示预算耗尽，应停下交给用户
+    const SOLVER_TOOLS = /^(foam_run_solver_async|foam_solver_status|solver_wait|sim_run_openfoam|mfix_run_solver_async|mfix_solver_status|lbm_run_async|lbm_solver_status|run_command)$/;
+    function trackSolverError(name, result, args) {
+      if (!SOLVER_TOOLS.test(name)) return false;
+      const c = classifySolverError(name, args, result);
+      if (!c) {
+        if (name !== 'run_command' && /运行中|Time\s*=|已结束\(exit=0\)/.test(String(result || ''))) resetSolverErrBudget();
+        return false;
+      }
+      const cat = c.cat;
+      // 同一次失败的作业被反复查询（foam_solver_status / solver_wait）只算一次
+      session._solverErrSeen = session._solverErrSeen || new Set();
+      if (c.once) { if (session._solverErrSeen.has(c.once)) return false; session._solverErrSeen.add(c.once); }
+      if (cat === session._solverErrCategory) session._solverErrCount++;
+      else { session._solverErrCategory = cat; session._solverErrCount = 1; }
+      ws.send(JSON.stringify({ type: 'term', line: `[错误预算] ${cat} 第 ${session._solverErrCount}/3 次` }));
+      if (session._solverErrCount < 3) return false;
+      session._pendingErrBudgetMsg = `[系统·错误预算耗尽] 同一类求解器错误「${cat}」已连续出现 ${session._solverErrCount} 次，说明当前修复思路无效。立即停止重试，向用户汇报：①三次尝试各改了什么；②错误证据（log 片段）；③你判断的根因；④2–3 个备选方案供用户选择。不要再启动求解器。`;
+      notifyEvent({ kind: 'error', key: `errbudget:${session.task?.id}`, level: 'high', taskId: session.task?.id, title: `🛑 同类求解错误 3 次：${session.task?.title || ''}`, body: cat });
+      resetSolverErrBudget();
+      session._endReasonDetail = 'awaiting_user';
+      return true;
+    }
     function fp(name, args) {
       try { return name + ':' + JSON.stringify(args).slice(0, 240); } catch { return name + ':?'; }
     }
@@ -6140,7 +7722,12 @@ async function runAgent(ws, userText, attachments) {
       for (let i = recentFP.length - 2; i >= 0 && recentFP[i] === last; i--) n++;
       return n;
     }
-    for (let step = 0; step < MAX_AUTO_STEPS; step++) {
+    const maxSteps = Math.max(10, Number(SETTINGS.maxAutoSteps) || MAX_AUTO_STEPS_DEFAULT);
+    session._budgetExhausted = false;
+    // A3: budget 续跑独立计数（与 wakeCount 分开），防止预算耗尽反复续跑无上限
+    if (!resume) session._budgetResumeCount = 0;
+    for (let step = 0; step < maxSteps; step++) {
+      if (step === maxSteps - 1) session._budgetExhausted = true;
       if (session.aborted) { ws.send(JSON.stringify({ type: 'term', line: '[已停止]' })); break; }
       // 🧭 Codex 式引导：把运行中用户插入的新消息注入本步上下文，智能体据此调整后续思路
       if (Array.isArray(session._steerQueue) && session._steerQueue.length) {
@@ -6153,7 +7740,14 @@ async function runAgent(ws, userText, attachments) {
         ws.send(JSON.stringify({ type: 'term', line: `[引导] 已把 ${steers.length} 条新输入注入智能体上下文，后续步骤将据此调整` }));
         persistSession(session);
       }
-      autoCompactIfNeeded(session, ws);
+      // 首次出现报错时补注入错误排查协议（只重建一次系统提示，避免每步破坏提示缓存）
+      if (session.foamMode && !session._errorProtocolOn && sessionHadError(session)) {
+        session._errorProtocolOn = true;
+        try { session.messages[0] = { role: 'system', content: buildSystemPrompt(session) }; } catch {}
+      }
+      await autoCompactIfNeeded(session, ws, session.aborter && session.aborter.signal);
+      try { const g = pruneOldToolResults(session); if (g) ws.send(JSON.stringify({ type: 'term', line: `[上下文] 已裁剪旧工具输出约 ${Math.round(g / 1000)} k 字符` })); } catch {}
+      try { Evolve.onLlmStep(session); } catch {}
       ws.send(JSON.stringify({ type: 'assistant_start' }));
       ws.send(JSON.stringify({ type: 'agent_phase', phase: 'llm_thinking', detail: `调用 LLM (第 ${step+1} 步)` }));
       let msg;
@@ -6165,13 +7759,59 @@ async function runAgent(ws, userText, attachments) {
         break;
       }
       const _abortSignal = session.aborter.signal;
-      try { msg = await callLLM(session.messages, ws, _abortSignal, filterTools(session.enabledTools || DEFAULT_ENABLED)); }
+      try { msg = await callLLM(session.messages, ws, _abortSignal, toolsForMode(session.enabledTools || DEFAULT_ENABLED, session.task && session.task.agentMode, session));
+        // A6: LLM 熔断器 — 连续失败计数清零
+        session._llmConsecFail = 0;
+      }
       catch (e) { if (session.aborted) { ws.send(JSON.stringify({ type: 'term', line: '[已停止]' })); break; }
+        // 上游拒收「上下文过长」：强制压缩一次再重发本步，不算故障
+        if (e && e.contextOverflow && !session._overflowRetried) {
+          session._overflowRetried = true;
+          ws.send(JSON.stringify({ type: 'term', line: '[上下文] 上游提示上下文过长 → 强制压缩后重发本步' }));
+          try { await autoCompactIfNeeded(session, ws, session.aborter && session.aborter.signal, true); } catch (e2) { console.warn('[compact]', e2 && e2.message); }
+          for (const mm of session.messages) {
+            if (mm.role === 'tool' && typeof mm.content === 'string' && mm.content.length > 6000) mm.content = mm.content.slice(0, 3500) + '\n…[上下文过长，已裁剪；需要细节就重新读文件/日志]…\n' + mm.content.slice(-1500);
+          }
+          ws.send(JSON.stringify({ type: 'assistant_end' }));
+          step--; continue;
+        }
         console.error(`[runAgent#${myRunSeq}] callLLM error @ step ${step+1}:`, (e && e.stack) || e);
+        // A6: LLM 熔断器 — 连续失败 >= 3 次暂停并通知用户，避免无限报错重试
+        session._llmConsecFail = (session._llmConsecFail || 0) + 1;
+        if (session._llmConsecFail >= 3) {
+          const errMsg = `[LLM 熔断] 连续 ${session._llmConsecFail} 次调用失败，已暂停。请检查：API Key / Base URL / 模型 ID 是否正确，或点「继续」重试。`;
+          try { ws.send(JSON.stringify({ type: 'term', line: errMsg })); } catch {}
+          notifyEvent({ kind: 'error', key: `llm-fail:${task?.id}`, level: 'high', taskId: task?.id, title: `⚠️ LLM 连续失败：${task?.title || ''}`, body: String(e.message || e).slice(0, 400) });
+          session._llmConsecFail = 0;
+          session._endReasonDetail = 'llm_circuit';
+          ws.send(JSON.stringify({ type: 'error', message: errMsg })); break;
+        }
+        if (task && recoveryManager.version(task) === recoveryVersion) {
+          syncTaskFromSession(session);
+          recoveryManager.failure(task, e);
+        }
+        session._budgetExhausted = false;
         ws.send(JSON.stringify({ type: 'error', message: `[诊断 runAgent#${myRunSeq} step ${step+1}] ${String(e.message || e)}` })); break; }
+      if (session.aborted) break;
       session.messages.push(msg);
+      recoveryManager.success(task);
+      session._overflowRetried = false;
+      persistSession(session, true);
       ws.send(JSON.stringify({ type: 'assistant_end' }));
       const hasTools = Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0;
+      // 输出撞到长度上限 / 传输中断，且没有工具调用：让模型从断点接着做（对照 OpenCode，最多连续 2 次）
+      if (!hasTools && (msg._finish === 'length' || msg._finish === 'interrupted')) {
+        session._lengthCont = (session._lengthCont || 0) + 1;
+        if (session._lengthCont <= 2) {
+          const cut = msg._finish === 'length';
+          session.messages.push({ role: 'user', content: cut
+            ? '[系统] 你上一条回复撞到了输出长度上限被截断。不要道歉、不要复述已写的内容；把剩下的工作拆成更小的步骤，立刻用工具落地下一步（大文件分多次 write_file / edit_file）。'
+            : '[系统] 你上一条回复在传输中被中断。不要道歉、不要重复已写的内容，从中断处接着做；该调用工具就直接调用。' });
+          ws.send(JSON.stringify({ type: 'term', line: `[${cut ? '输出截断' : '回复中断'}] 第 ${session._lengthCont}/2 次 → 已要求模型接着做` }));
+          continue;
+        }
+        session._lengthCont = 0;
+      } else session._lengthCont = 0;
         // V4 人在回路：assistant 文本里抛出编号选项且无 tool_call → 强制停下等用户回复
         try {
           if (!hasTools && typeof msg.content === 'string' && msg.content.trim()) {
@@ -6179,8 +7819,33 @@ async function runAgent(ws, userText, attachments) {
             const numbered = (c.match(/(^|\n)\s*[1-9][\)、.．]/g) || []).length;
             const hasOptionWord = /(请选择|请回复|请回|请选|哪个|选哪|你想|你要|确认一下|要不要|是否|回[\s]?[1-9]\s*[\/、]\s*[1-9])/.test(c);
             const endsWithQ = /[?？]\s*$/.test(c.trim());
-            if (numbered >= 2 || (hasOptionWord && (endsWithQ || numbered >= 1))) {
+            const _liveQ = _liveRunOf(session);
+            const _qMuted = !!_liveQ && (session._choiceTimeouts || 0) >= 2;
+            if (_qMuted && !session._qMuteNoted && (numbered >= 2 || (hasOptionWord && (endsWithQ || numbered >= 1)))) {
+              // 同一问题已超时 ≥2 次：用户不在，停止每小时重复提问/重新计时的空转循环
+              session._qMuteNoted = true;
+              ws.send(JSON.stringify({ type: 'term', line: `[人在回路] 问题已超时 ${session._choiceTimeouts} 次 → 不再重复提问/计时，问题保留，用户回复时插入` }));
+              session.messages.push({ role: 'user', content: `[系统] 这个问题已经超时 ${session._choiceTimeouts} 次，用户暂时不在。不要在之后的回复里重复提问或重复写"第 N 次未回复"，问题已保留，用户回复会作为引导插入。如果任务原文或之前的用户消息已经批准过这个动作，就按批准执行；否则继续推进其余待办（用 solver_wait 等作业）。` });
+              continue;
+            }
+            if (!_qMuted && (numbered >= 2 || (hasOptionWord && (endsWithQ || numbered >= 1)))) {
+              await Fidelity.noteCase(session, _taskCaseDir(session.task)).catch(() => []);
+              const liveRun = _liveQ;
+              _scheduleChoiceTimeout(session, ws, !!liveRun);
+              if (liveRun && !session._questionCarried) {
+                // 有长作业在跑：提问不收尾，问题挂起，先做不依赖该决定的工作；用户回复走引导队列插入
+                session._questionCarried = true;
+                session.pendingQuestion = { text: c.slice(0, 2000), ts: Date.now() };
+                notifyEvent({ kind: 'question', key: `q:${session.task?.id}`, level: 'high', taskId: session.task?.id,
+                  title: `❓ 智能体在等你决定：${session.task?.title || ''}`, body: c.slice(-600) });
+                ws.send(JSON.stringify({ type: 'agent_phase', phase: 'awaiting_user', detail: '问题已提交，agent 继续做不依赖该决定的工作' }));
+                ws.send(JSON.stringify({ type: 'term', line: `[人在回路·非阻塞] 作业 ${liveRun.runId} 在跑 → 问题已挂起，agent 继续工作；${_choiceTimeoutMin()} 分钟未回复将按其推荐方案执行` }));
+                session.messages.push({ role: 'user', content: `[系统] 你的问题已转给用户。作业 ${liveRun.runId} 仍在运行，不要结束本轮空等：先做不依赖这个决定的待办（后处理脚本、报告框架、健康检查，用 solver_wait 定时等待），暂不执行任何选项。用户回复会作为引导插入；${_choiceTimeoutMin()} 分钟内没回复，系统会通知你按推荐方案执行。` });
+                continue;
+              }
               session.awaitingUserChoice = true;
+              notifyEvent({ kind: 'question', key: `q:${session.task?.id}`, level: 'high', taskId: session.task?.id,
+                title: `❓ 智能体暂停等待你的回复：${session.task?.title || ''}`, body: c.slice(-600) });
               ws.send(JSON.stringify({ type: 'agent_phase', phase: 'awaiting_user', detail: '等待用户回复选项 / 确认' }));
               ws.send(JSON.stringify({ type: 'term', line: '[人在回路] Agent 抛出选项 → 已暂停等待你的回复（V4）' }));
               break;
@@ -6203,7 +7868,7 @@ async function runAgent(ws, userText, attachments) {
           'foam_residual_series', 'foam_mesh_quality', 'foam_solver_status',
           'foam_inspect_case', 'foam_find_tutorial', 'foam_find_source',
           'mfix_solver_status', 'lbm_solver_status',
-          'run_status_load', 'run_list'
+          'run_status_load', 'foam_postproc_list', 'foam_postproc_stats'
         ]);
         const PARALLEL_CAP = 4;
         const isReadonly = (tc) => READONLY.has(tc.function.name) && !NEEDS_APPROVAL.has(tc.function.name);
@@ -6240,9 +7905,10 @@ async function runAgent(ws, userText, attachments) {
             for (let i = 0; i < roBatch.length; i++) {
               const tc = roBatch[i]; const name = tc.function.name; const result = results[i] ?? '[并行执行无返回]';
               ws.send(JSON.stringify({ type: 'tool_result', id: tc.id, name, result }));
-              session.messages.push({ role: 'tool', tool_call_id: tc.id, content: clipForHistory(result) });
+              session.messages.push({ role: 'tool', tool_call_id: tc.id, content: clipForHistory(result, name) });
               let _wmArgs = {}; try { _wmArgs = JSON.parse(tc.function.arguments || '{}'); } catch {}
               captureToolSignal(session, name, result, _wmArgs);
+              trackSolverError(name, result, _wmArgs);
               respondedIds.add(tc.id);
               recentFP.push(fp(name, (() => { try { return JSON.parse(tc.function.arguments || '{}'); } catch { return {}; } })()));
               if (recentFP.length > 12) recentFP.shift();
@@ -6264,7 +7930,12 @@ async function runAgent(ws, userText, attachments) {
             if (session.autoMode) {
               ws.send(JSON.stringify({ type: 'term', line: `[Auto 批准] ${name}: ${args.command || args.case_path || ''}` }));
             } else {
+              if (session.task) { session.task.awaitingApproval = true; persistTaskNow(session.task); }
+              notifyEvent({ kind: 'approval', key: `ap:${session.task?.id}`, level: 'high', taskId: session.task?.id,
+                title: `🔐 需要审批：${name}`, body: `${session.task?.title ? `任务：${session.task.title}\n` : ''}${String(args?.command || args?.case_path || args?.path || JSON.stringify(args || {})).slice(0, 500)}` });
               const ok = await new Promise((res) => { session.pendingApproval = res; ws.send(JSON.stringify({ type: 'approval_request', id: tc.id, name, args })); });
+              session._recoveryApprovalBlocked = false;
+              persistSession(session, true);
               if (session.aborted) { stop = true; break; }
               if (!ok) { const r = '用户拒绝执行。';
                 ws.send(JSON.stringify({ type: 'tool_result', id: tc.id, name, result: r }));
@@ -6276,8 +7947,9 @@ async function runAgent(ws, userText, attachments) {
           let result; try { ws.send(JSON.stringify({ type: 'agent_phase', phase: 'tool_exec', detail: `执行 ${name}`, tool: name })); result = await execToolWithProgress(name, args, session, ws); } catch (e) { result = `执行失败：${e.message || e}`; }
           ws.send(JSON.stringify({ type: 'tool_result', id: tc.id, name, result }));
           ws.send(JSON.stringify({ type: 'agent_phase', phase: 'tool_done', detail: `${name} 返回`, tool: name }));
-          session.messages.push({ role: 'tool', tool_call_id: tc.id, content: clipForHistory(result) });
+          session.messages.push({ role: 'tool', tool_call_id: tc.id, content: clipForHistory(result, name) });
           captureToolSignal(session, name, result, args);
+          if (trackSolverError(name, result, args)) stop = true;
           respondedIds.add(tc.id);
           persistSession(session);   // 边跑边落盘（防抖 3s），服务崩溃/重启也不丢上下文
           if (MODIFYING.has(name)) broadcastCheckpoints(ws);
@@ -6298,16 +7970,25 @@ async function runAgent(ws, userText, attachments) {
         for (const id of allCallIds) if (!respondedIds.has(id)) {
           session.messages.push({ role: 'tool', tool_call_id: id, content: '[未执行：流程中断]' });
         }
+        // HC-4: tool 结果补齐后再注入错误预算提示（保持 tool_call/tool 顺序合法），下一轮模型只做汇报
+        if (session._pendingErrBudgetMsg) {
+          session.messages.push({ role: 'user', content: session._pendingErrBudgetMsg });
+          session._pendingErrBudgetMsg = null;
+          session._errBudgetReport = true;
+          stop = false;
+        }
         if (stop) break;
         continue;
       }
       if (session.taskComplete) break;
       // ── 反空转守卫：本轮没有任何工具调用（model 只输出文字/计划，零进展）──
+      // HC-4: 错误预算耗尽后模型已做汇报 → 直接停下等用户，不走反空转催促
+      if (session._errBudgetReport) { session._errBudgetReport = false; session._endReasonDetail = 'awaiting_user'; break; }
       noToolStreak++;
       const undone = (session.todos || []).filter(t => !t.done);
       // 识别「嘴上说要动手、却没调工具」的叙述（让我开始写/让我先创建目录/接下来我来…）——这正是空转卡死的症状
       const narratesAction = typeof msg.content === 'string' &&
-        /(让我(先|来|现在|直接)?\s*(创建|编写|写|开始|建立|生成|实现)|接下来\s*(我)?\s*(来|要|将)|现在\s*(我)?\s*(来|开始)|我(将|来)\s*(创建|编写|写|实现)|首先[^。\n]{0,24}(创建|编写|建立|写))/.test(msg.content);
+        /(让我(先|来|现在|直接)?\s*(创建|编写|写|开始|建立|生成|实现)|接下来\s*(我)?\s*(来|要|将)|现在\s*(我)?\s*(来|开始)|我(将|来)\s*(创建|编写|写|实现)|首先[^。\n]{0,24}(创建|编写|建立|写)|\b(let me|i'?ll|i will|i'?m going to|next,? i(?:'ll| will)?|now i(?:'ll| will)?)\s+(?:now\s+|first\s+|go ahead and\s+)?(create|write|start|begin|set up|generate|implement|build|run|edit|update|add|fix)\b)/i.test(msg.content);
       // 任务进行中（有未完成待办）或 出现「只说不做」叙述 → 强力催它立刻落地一个工具
       if ((undone.length > 0 || narratesAction) && noToolStreak <= 2 && !session.awaitingUserChoice) {
         nudgeCount++;
@@ -6318,18 +7999,49 @@ async function runAgent(ws, userText, attachments) {
       }
       // 连续 ≥3 轮仍在空转 → 停下交给用户，避免无限"让我开始写代码"循环
       if (noToolStreak >= 3) {
-        ws.send(JSON.stringify({ type: 'term', line: '[反空转] Agent 连续多轮只规划、不调用工具，已暂停本轮。请补充更明确的指令或点继续。' }));
+        // 无人值守模式（autoMode/headless）最多额外注入 3 次紧急催促，再停下；避免长程任务因一轮文字输出就卡住
+        // A4: 区分真实思考 vs 空转叙述：只有在有未完成待办 or narratesAction 时才触发催促
+        // A4: 若内容是实质性的分析/规划（无叙述 pattern 且无未完成待办）→ 允许一轮纯文字后正常结束
+        const _unattended = session.autoMode || ws.isHeadless;
+        if (_unattended && noToolStreak < 6) {
+          try { ws.send(JSON.stringify({ type: 'term', line: `[反空转 ${noToolStreak}] 无人值守模式：注入紧急催促，继续推进` })); } catch {}
+          session.messages.push({ role: 'user', content: `[系统·反空转 ${noToolStreak}/5] 你已连续 ${noToolStreak} 轮只输出文字而未调用工具。当前是无人值守/自动模式——请立即行动：选一个最关键的待办直接调用工具（不要先说"我来……"，直接调）。若真需用户决定才能继续，调 task_complete({passed:false, memo:"需要用户输入：xxx"}) 停下并说明原因。` });
+          continue;
+        }
+        // A2: 细化 endReason — stalled（真空转）vs awaiting_user（等用户）
+        session._endReasonDetail = session.awaitingUserChoice ? 'awaiting_user' : 'stalled';
+        try { ws.send(JSON.stringify({ type: 'term', line: '[反空转] Agent 连续多轮只规划、不调用工具，已暂停本轮。请补充更明确的指令或点继续。' })); } catch {}
         break;
       }
       // 正常收尾前若还有运行中插入的引导 → 不收尾，继续循环消费新输入
       if (Array.isArray(session._steerQueue) && session._steerQueue.length) continue;
+      // 🎯 目标门（对齐 OpenChamber Session Goal）：目标未确认达成且未在问用户 → 续推，最多 3 次
+      const goal = task && task.goal;
+      if (goal && goal.status === 'active' && !session.awaitingUserChoice && task.agentMode !== 'plan' && (goal.nudges || 0) < 3) {
+        goal.nudges = (goal.nudges || 0) + 1;
+        session.messages.push({ role: 'user', content: `[系统·目标门 ${goal.nudges}/3] 会话目标尚未确认达成：${goal.text}${goal.criteria ? '\n验收标准：' + goal.criteria : ''}\n请对照验收标准自检：已满足 → 调 task_complete 并逐条给证据；未满足 → 立即调用工具推进下一步；被阻塞 → 说明原因并向用户提问。` });
+        ws.send(JSON.stringify({ type: 'term', line: `[目标门 ${goal.nudges}/3] 目标未确认达成 → 继续推进` }));
+        continue;
+      }
+      // 🏁 完成门：工具执行完但未 task_complete 也无剩余待办 → autoMode 下催促一次收尾
+      if (!session.taskComplete && !session.aborted && session.autoMode && completionNudge < 1 &&
+          !session.awaitingUserChoice && !session.pendingQuestion) {
+        const _lastMsg = session.messages[session.messages.length - 1];
+        if (_lastMsg && _lastMsg.role === 'tool') {
+          completionNudge++;
+          const _undoneC = (session.todos || []).filter(t => !t.done).length;
+          session.messages.push({ role: 'user', content: `[系统·完成门] 工具调用已完成，但没有调 task_complete${_undoneC ? '，还有 ' + _undoneC + ' 项待办' : '，也没有剩余待办'}。若任务已全部完成，请调 task_complete({passed:true,summary:"完成摘要"})；若还有工作，请调 update_todos 补充并继续执行。` });
+          try { ws.send(JSON.stringify({ type: 'term', line: '[完成门] 工具完成但未 task_complete → 催促收尾' })); } catch {}
+          continue;
+        }
+      }
       break;
     }
   } finally {
     console.log(`[runAgent #${myRunSeq}] ended (aborted=${session.aborted}, taskComplete=${session.taskComplete})`);
     session.currentCheckpoint = null; session.aborter = null; session._running = false;
-    if (session.task && session.task._runningSession === session) session.task._runningSession = null;
     persistSession(session, true);   // 轮次结束立即落盘任务上下文
+    syncTaskObservers(session, sessions.values());
     broadcastTaskState();
     // 自进化：本轮若被 verifier 盖章通过，提示可沉淀经验（opt-in，不自动写库）
     try {
@@ -6337,12 +8049,42 @@ async function runAgent(ws, userText, attachments) {
       if (draft) {
         ws.send(JSON.stringify({ type: 'skill_distill', draft }));
         ws.send(JSON.stringify({ type: 'term', line: `[经验沉淀] 本轮已通过 verifier（${(draft.provenance.verified_by || []).join(', ') || 'stage'}）→ 可调 skill_save 把可复用配方存成独立技能卡。` }));
-        if ((session._novelErrors || []).length) {
-          ws.send(JSON.stringify({ type: 'term', line: `[经验沉淀] 本轮还遇到 ${session._novelErrors.length} 个内置未覆盖的新报错且最终跑通 → 建议调 learn_error_pattern 逐个登记（pattern 取报错里的稳定特征字串），下次秒命中。` }));
-        }
       }
-      session._novelErrors = [];
+      // 新报错自动学习：不再依赖模型自觉调 learn_error_pattern
+      const novel = (session._novelErrors || []).splice(0);
+      if (novel.length && !session.aborted && SkillLib.analyzeTrajectory(session.messages).verified) {
+        const traj = session.messages.slice(-40).map(m => `${m.role}: ${typeof m.content === 'string' ? m.content.slice(0, 400) : ''}`).join('\n');
+        Fidelity.autoLearnErrors(novel, traj, (sys, u) => llmOneShot(sys, u, { maxTokens: 600 }), (p) => SkillLib.addErrorPattern(p))
+          .then(cats => { if (cats.length) try { ws.send(JSON.stringify({ type: 'term', line: `[经验沉淀] 已自动登记 ${cats.length} 条新报错模式：${cats.join('；')}` })); } catch {} })
+          .catch(e => console.warn('[autoLearn]', e.message));
+      }
     } catch {}
+    // 步数预算耗尽但任务未完成 → 自动续跑（与作业唤醒共用 wakeCount 上限），否则长程任务会在中途静默停摆
+    const undoneLeft = (session.todos || []).filter(t => !t.done).length;
+    const _hasLiveSolver = typeof SOLVER_RUNS !== 'undefined' ? [...SOLVER_RUNS.values()].some(r => !r.ended && r.ownerTaskId === (session.task && session.task.id)) : false;
+    const wasExhausted = session._budgetExhausted; // A2 fix: 先保存再清零，否则 budget_exhausted reason 永远不可达
+    const budgetCont = wasExhausted && !session.aborted && !session.taskComplete && (undoneLeft > 0 || (session.autoMode && _hasLiveSolver)) && session.task && SETTINGS.autoResume !== false;
+    session._budgetExhausted = false;
+    if (budgetCont) {
+      const task = session.task;
+      // A3: budget 续跑用独立计数器，最多 3 次自动续跑，之后交还用户
+      session._budgetResumeCount = (session._budgetResumeCount || 0) + 1;
+      const budgetMax = Number.isInteger(SETTINGS.budgetResumeMax) && SETTINGS.budgetResumeMax >= 0 ? SETTINGS.budgetResumeMax : 3;
+      if (session._budgetResumeCount <= budgetMax) {
+        const txt = `[系统·步数预算用尽自动续跑 ${session._budgetResumeCount}/${budgetMax}] 上一轮已用完单轮步数上限，任务还有 ${undoneLeft} 项待办。请先 run_status_load 和 foam_solver_status/日志确认后台作业状态（可能已结束或崩溃），再从中断处继续，不要从头重来。`;
+        ws.send(JSON.stringify({ type: 'term', line: `[自动续跑] 步数预算用尽但仍有 ${undoneLeft} 项待办 → 3s 后自动继续 (${session._budgetResumeCount}/${budgetMax})` }));
+        setTimeout(() => {
+          if (session._running || session.aborted) return;
+          if (task.recovery && !['idle', 'cancelled'].includes(task.recovery.status)) return;
+          try { session.messages[0] = { role: 'system', content: buildSystemPrompt(session) }; } catch {}
+          if (ws.isHeadless && !sessions.has(ws)) sessions.set(ws, session);
+          runAgent(ws, txt, []).catch(e => console.warn('[budget-cont] 失败:', e.message));
+        }, 3000);
+      } else {
+        ws.send(JSON.stringify({ type: 'term', line: `[自动续跑] 已连续自动续跑 ${budgetMax} 次仍用尽预算，暂停；发一条消息即可继续。` }));
+        notifyEvent({ kind: 'info', key: `budget-pause:${task?.id}`, level: 'medium', taskId: task?.id, title: `⏸ 步数预算耗尽：${task?.title || ''}`, body: `已连续 ${budgetMax} 次自动续跑仍用尽步数预算。可能需要拆分任务或检查是否有死循环。发一条消息即可继续。` });
+      }
+    }
     // 运行刚结束时还排着队的引导（收尾/完成瞬间发来的）→ 作为新一轮继续，不丢消息
     const leftoverSteers = Array.isArray(session._steerQueue) ? session._steerQueue.splice(0) : [];
     if (leftoverSteers.length && !session.aborted && ws.readyState === 1) {
@@ -6351,26 +8093,255 @@ async function runAgent(ws, userText, attachments) {
       ws.send(JSON.stringify({ type: 'term', line: '[引导] 上一轮刚结束，你的新输入作为新一轮继续' }));
       setImmediate(() => { try { session.messages[0] = { role: 'system', content: buildSystemPrompt(session) }; runAgent(ws, txt, atts); } catch (e) { console.warn('[steer] 续跑失败:', e.message); } });
     }
-    ws.send(JSON.stringify({ type: 'agent_end' }));
+    // A2: 细化 endReason — 区分 budget_exhausted / stalled / awaiting_user / llm_circuit / complete / stopped
+    let _endReason;
+    if (session.aborted) _endReason = 'stopped';
+    else if (session.taskComplete) _endReason = 'complete';
+    else if (session._endReasonDetail === 'llm_circuit') _endReason = 'error';
+    else if (session._endReasonDetail === 'awaiting_user') _endReason = 'awaiting_user';
+    else if (session._endReasonDetail === 'stalled') _endReason = 'stalled';
+    else if (wasExhausted) _endReason = 'budget_exhausted'; // A2 fix: 用 wasExhausted（清零前保存）
+    else _endReason = 'paused';
+    session._endReasonDetail = null; // reset for next run
+    const _canContinue = !session.aborted && !session.taskComplete;
+    ws.send(JSON.stringify({ type: 'agent_end', reason: _endReason, canContinue: _canContinue, state: (typeof getTaskState === 'function' ? getTaskState(session) : _endReason) }));
     broadcastCheckpoints(ws);
+    // A7: awaiting_user 超 10 min 通知
+    if (_endReason === 'awaiting_user' && session.task) {
+      clearTimeout(session._idleNotifyTimer);
+      session._idleNotifyTimer = setTimeout(() => {
+        session._idleNotifyTimer = null;
+        if (!session._running && (session.awaitingUserChoice || session.pendingQuestion)) {
+          notifyEvent({ kind: 'question', key: `idle:${session.task?.id}`, level: 'high',
+            taskId: session.task?.id,
+            title: `⏰ Agent 在等你 · ${session.task?.title || '任务'}`,
+            body: '智能体已暂停超过 10 分钟，等待你回复或确认。' });
+        }
+      }, 10 * 60 * 1000);
+      if (session._idleNotifyTimer?.unref) session._idleNotifyTimer.unref();
+    }
+    if (session.task && session.task._runningSession === session) session.task._runningSession = null;
+    if (ws.isHeadless && !(leftoverSteers.length && !session.aborted)) { sessions.delete(ws); _flushWake(session.task && session.task.id); }
   }
 }
 
+// ── 提问超时：用户长时间不回复时按推荐方案继续，避免长程任务空等 ──
+function _choiceTimeoutMin() { return Number(SETTINGS.choiceTimeoutMin ?? 60); }
+function _liveRunOf(session) {
+  const tid = session.task && session.task.id;
+  if (!tid) return null;
+  for (const r of SOLVER_RUNS.values()) if (!r.ended && r.ownerTaskId === tid) return r;
+  return null;
+}
+function _scheduleChoiceTimeout(session, ws, hasLiveRun) {
+  const min = _choiceTimeoutMin();
+  // 无作业在跑的交互式会话：用户可能正在思考，不自动替他决定（除非 autoMode 无人值守）
+  if (!(min > 0) || !session.task || !(hasLiveRun || session.autoMode)) return;
+  clearTimeout(session._choiceTimer);
+  session._choiceTimer = setTimeout(() => {
+    session._choiceTimer = null;
+    if (session.aborted || !(session.awaitingUserChoice || session.pendingQuestion)) return;
+    if (session.task.recovery && !['idle', 'cancelled'].includes(session.task.recovery.status)) return;
+    session.awaitingUserChoice = false; session.pendingQuestion = null; session._questionCarried = false;
+    session._choiceTimeouts = (session._choiceTimeouts || 0) + 1;
+    const txt = `[系统·用户 ${min} 分钟未回复] 按你上一个问题里推荐的方案继续执行，并在偏离日志/报告中注明"用户未回复，按推荐方案执行"。例外：若推荐方案会丢弃已算结果、停止在跑的作业、修改论文物理量，或问题是在请用户批准几何/边界条件/模型的简化与偏离（偏离日志里状态为 PENDING 的条目、Pre-Flight 确认），则不要执行、也不要自行把偏离改成已批准，改做不依赖该决定的待办，问题继续保留。`;
+    try { ws.send(JSON.stringify({ type: 'term', line: `[提问超时] ${min} 分钟未收到回复 → 按 agent 推荐方案继续` })); } catch {}
+    if (session._running) { (session._steerQueue || (session._steerQueue = [])).push({ text: txt, attachments: [] }); return; }
+    let w = ws, s = session;
+    if (ws.readyState !== 1 || !sessions.has(ws)) { if (!session.task) return; ({ ws: w, s } = _makeHeadlessSession(session.task)); }
+    try { s.messages[0] = { role: 'system', content: buildSystemPrompt(s) }; } catch {}
+    runAgent(w, txt, []).catch(e => console.warn('[choice-timeout] runAgent 失败:', e.message));
+  }, min * 60000);
+  if (session._choiceTimer.unref) session._choiceTimer.unref();
+}
+
+// ── 作业结束自动唤醒：后台求解跑完时 agent 早已退出循环，这里按任务把 agent 叫回来接着干 ──
+const _wakePending = new Map();   // taskId -> { runs: [run], timer }
+function _scheduleWake(run) {
+  if (SETTINGS.autoResume === false) return;
+  if (!run.ownerTaskId || run._reported || run._userStopped) return;
+  run._reported = true;
+  let p = _wakePending.get(run.ownerTaskId);
+  if (!p) { p = { runs: [], timer: null }; _wakePending.set(run.ownerTaskId, p); }
+  p.runs.push(run);
+  clearTimeout(p.timer);
+  // 防抖：参数扫描常常一批作业前后脚结束，合并成一次唤醒
+  p.timer = setTimeout(() => _flushWake(run.ownerTaskId), 3000);
+}
+function _superseded(r) {
+  if (r._seenEnded) return true;
+  for (const o of SOLVER_RUNS.values()) if (o !== r && o.casePath === r.casePath && o.started > r.started && o.ownerTaskId === r.ownerTaskId) return true;
+  return false;
+}
+function _sessionsForTask(task) {
+  return [...sessions.entries()].filter(([w, s]) => s.task === task && w.readyState === 1);
+}
+function _flushWake(taskId) {
+  const p = taskId && _wakePending.get(taskId);
+  if (!p || !p.runs.length) return;
+  const task = TASKS.get(taskId);
+  if (!task) { _wakePending.delete(taskId); return; }
+  if (task.recovery && !['idle', 'cancelled'].includes(task.recovery.status)) return;
+  const running = task._runningSession && task._runningSession._running ? task._runningSession : null;
+  // 智能体已经知道结果的作业不再通知：启动检查里已看到它退出，或同一算例后来又启动了新作业（旧的失败已被修掉重跑）
+  const runs = p.runs.splice(0).filter(r => !_superseded(r));
+  _wakePending.delete(taskId);
+  if (!runs.length) return;
+  const text = '[系统·后台作业结束] 以下作业已结束，请检查结果（日志尾 / 残差 / postProcessing 统计）后继续未完成的待办；全部完成则调 task_complete，失败则诊断并修正。\n\n'
+    + runs.map(r => _runSummary(r, 30)).join('\n\n');
+  if (running) {
+    (running._steerQueue || (running._steerQueue = [])).push({ text, attachments: [], system: true });
+    return;
+  }
+  const max = Number(SETTINGS.autoResumeMax) || 20;
+  task.wakeCount = (task.wakeCount || 0) + 1;
+  if (task.wakeCount > max) {
+    const note = JSON.stringify({ type: 'term', line: `[自动续跑] 任务「${task.title}」已连续自动唤醒 ${max} 次，暂停自动续跑；发一条消息即可继续。` });
+    for (const c of allClients) if (c.readyState === 1) c.send(note);
+    return;
+  }
+  const attached = _sessionsForTask(task).filter(([w]) => !w.isHeadless);
+  if (task.awaitingApproval || task.awaitingUserChoice || attached.some(([, as]) => as.awaitingUserChoice || as.pendingApproval)) {
+    for (const [w] of attached) w.send(JSON.stringify({ type: 'term', line: `[后台作业结束] ${runs.map(r => r.runId).join(',')}；agent 正在等你回复，未自动续跑` }));
+    return;
+  }
+  let ws, s;
+  if (attached.length) { [ws, s] = attached[0]; }
+  else { ({ ws, s } = _makeHeadlessSession(task)); }
+  try { s.messages[0] = { role: 'system', content: buildSystemPrompt(s) }; } catch {}
+  for (const [w] of _sessionsForTask(task)) if (w !== ws && !w.isHeadless) w.send(JSON.stringify({ type: 'term', line: `[自动续跑] 后台作业结束，任务「${task.title}」已自动唤醒` }));
+  ws.send(JSON.stringify({ type: 'term', line: `[自动续跑 ${task.wakeCount}/${max}] 后台作业 ${runs.map(r => r.runId).join(',')} 已结束 → 唤醒 agent 继续` }));
+  runAgent(ws, text, []).catch(e => console.warn('[wake] runAgent 失败:', e.message));
+}
+// ── 多模型运行 ──
+// 每个模型一个任务（task.multiRun = { group, index, of, dir }），在 multirun/<group>/<模型>/ 下工作，互不覆盖文件；
+// 求解核数按空闲核数平分给各个模型，避免几个模型同时开大算例把机器挤爆
+const MULTI_RUNS = new Map();   // group -> { group, text, createdAt, taskIds, dir }
+function _slugModel(m) { return String(m).toLowerCase().replace(/[^a-z0-9.-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'model'; }
+function multiRunStart(text, refs, { autoMode = true, agentMode = 'build', attachments = [] } = {}) {
+  const group = 'mr' + Date.now().toString(36);
+  const dirRel = `multirun/${group}`;
+  const total = typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length;
+  let busy = 0; try { busy = [..._foamProcs().values()].reduce((a, g) => a + g.np, 0); } catch {}
+  const share = Math.max(1, Math.floor(Math.max(1, total - busy) / refs.length));
+  const tasks = [];
+  refs.forEach((ref, i) => {
+    const slug = _slugModel(ref.model) + (refs.filter((r, j) => j < i && _slugModel(r.model) === _slugModel(ref.model)).length ? `-${i + 1}` : '');
+    const dir = path.join(WORKSPACE, dirRel, slug);
+    try { fssync.mkdirSync(dir, { recursive: true }); } catch {}
+    const t = createTask(`${text.slice(0, 28)} · ${ref.model}`);
+    t.modelRef = ref; t.autoMode = autoMode; t.agentMode = agentMode === 'plan' ? 'plan' : 'build';
+    t.multiRun = { group, index: i + 1, of: refs.length, dir: path.relative(WORKSPACE, dir).split(path.sep).join('/'), cores: share };
+    t.taskText = text.slice(0, 4000);
+    persistTaskNow(t);
+    tasks.push({ id: t.id, model: modelLabel(ref), dir: t.multiRun.dir });
+    const prompt = `【多模型运行 ${i + 1}/${refs.length}｜同一任务同时交给了 ${refs.length} 个模型，之后会并排比较结果】\n`
+      + `- 你的工作目录：${t.multiRun.dir}/（所有新建和修改的文件、算例都放在这里，不要改别的目录，别的模型在旁边的目录里干同样的活）\n`
+      + `- 求解并行核数最多 ${share} 个（几个模型同时在跑）\n`
+      + `- 做完后用简短的结论收尾：做了什么、关键结果和数字、还有什么没做完\n\n${text}`;
+    const { ws } = _makeHeadlessSession(t);
+    setTimeout(() => runAgent(ws, prompt, attachments).catch(e => console.warn('[multi_run] 失败:', e.message)), 300 * i);
+  });
+  MULTI_RUNS.set(group, { group, text, createdAt: Date.now(), taskIds: tasks.map(x => x.id), dir: dirRel });
+  broadcastTaskState();
+  return { group, tasks, dirRel };
+}
+// 并排比较用：每个模型的状态、用量、最后的回答、产生的文件
+function multiRunSummary(group) {
+  const ts = [...TASKS.values()].filter(t => t.multiRun && t.multiRun.group === group).sort((a, b) => a.multiRun.index - b.multiRun.index);
+  if (!ts.length) return null;
+  const lastText = t => { for (let i = (t.messages || []).length - 1; i >= 0; i--) { const m = t.messages[i]; if (m.role === 'assistant' && typeof m.content === 'string' && m.content.trim()) return m.content.trim(); } return ''; };
+  const files = rel => { const out = []; const walk = (d, depth) => { if (depth > 3 || out.length > 200) return; let es = []; try { es = fssync.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of es) { const f = path.join(d, e.name); if (e.isDirectory()) { if (!/^(processor\d+|\d+(\.\d+)?)$/.test(e.name)) walk(f, depth + 1); } else out.push(path.relative(WORKSPACE, f).split(path.sep).join('/')); } };
+    walk(path.join(WORKSPACE, rel), 0); return out; };
+  return { group, text: ts[0].taskText || '', createdAt: ts[0].createdAt, runs: ts.map(t => {
+    const u = t.usageTotals || {};
+    const steps = (t.messages || []).filter(m => m.role === 'assistant').length;
+    const tools = (t.messages || []).reduce((a, m) => a + ((m.role === 'assistant' && m.tool_calls) ? m.tool_calls.length : 0), 0);
+    const fl = files(t.multiRun.dir);
+    return { id: t.id, title: t.title, model: modelLabel(t.modelRef), index: t.multiRun.index, dir: t.multiRun.dir,
+      running: !!(t._runningSession && t._runningSession._running), awaiting: !!(t.awaitingApproval || t.awaitingUserChoice || t.pendingQuestion),
+      updatedAt: t.updatedAt, startedAt: t.createdAt, steps, tools, calls: u.calls || 0, prompt: u.prompt || 0, completion: u.completion || 0,
+      answer: lastText(t).slice(0, 6000), files: fl.slice(0, 60), fileCount: fl.length, picked: !!t.multiRun.picked };
+  }) };
+}
+
+// 无浏览器连接时的"虚拟连接"：输出转发给后来打开这个任务的窗口，方便围观
+function _makeHeadlessSession(task) {
+  const ws = createTaskTransport(null, () => [...sessions]
+    .filter(([, session]) => session.task === task).map(([transport]) => transport));
+  const s = {
+    messages: task.messages, checkpoints: [], currentCheckpoint: null, pendingEdits: [], todos: [], taskComplete: false,
+    runState: { runId: null, label: '', stages: [], failCount: {}, memos: [], startedAt: 0 },
+    autoMode: task.autoMode === true,
+    foamMode: !!SETTINGS.foamMode, mfixMode: !!SETTINGS.mfixMode, lbmMode: !!SETTINGS.lbmMode, customMode: !!SETTINGS.customMode,
+    enabledTools: new Set(DEFAULT_ENABLED),
+    pendingApproval: null, aborter: null, aborted: false, currentProc: null, shell: null, shellCwd: WORKSPACE,
+    awaitingUserChoice: false, _ws: ws,
+  };
+  for (const [mode, grp] of [['foamMode', [...TOOL_GROUPS.foam, ...TOOL_GROUPS.opt]], ['mfixMode', TOOL_GROUPS.mfix], ['lbmMode', TOOL_GROUPS.lbm]])
+    if (s[mode]) for (const t of grp) s.enabledTools.add(t);
+  attachSessionToTask(s, task);
+  sessions.set(ws, s);
+  return { ws, s };
+}
+
+function _canRecoverTask(task) {
+  if (task.autoMode !== true || task.awaitingApproval || task.awaitingUserChoice || task.pendingQuestion) return false;
+  if ([...sessions.values()].some(s => s.task === task &&
+    (!s.autoMode || s.pendingApproval || s._recoveryApprovalBlocked || s.awaitingUserChoice || s.pendingQuestion))) return false;
+  const answered = new Set((task.messages || []).filter(message => message.role === 'tool').map(message => message.tool_call_id));
+  return !(task.messages || []).some(message => message.role === 'assistant' &&
+    (message.tool_calls || []).some(call => !answered.has(call.id)));
+}
+function _recoveryNotice(task) {
+  try { broadcastTaskState(); } catch {}
+  const recovery = task.recovery;
+  const detail = recovery.status === 'pending'
+    ? (_canRecoverTask(task) ? `retry ${recovery.attempt}${recovery.keepAlive ? ' (keep-alive)' : '/8'} at ${new Date(recovery.nextAt).toISOString()}` : 'pending: manual mode / approval / incomplete tool history; send a message to continue')
+    : recovery.status;
+  const line = `[LLM recovery] ${task.title || task.id}: ${detail}; ${recovery.lastError}`;
+  console.warn(line);
+  if ((recovery.status === 'failed' || recovery.status === 'exhausted') && typeof notifyEvent === 'function') {
+    notifyEvent({ kind: 'recovery_failed', key: `rec:${task.id}`, level: 'high', taskId: task.id,
+      title: `⛔ 智能体中断且无法自动恢复：${task.title || task.id}`, body: String(recovery.lastError || '').slice(0, 500) });
+  }
+  for (const [ws] of _sessionsForTask(task)) {
+    try { ws.send(JSON.stringify({ type: 'term', line })); } catch {}
+  }
+}
+const recoveryManager = new RecoveryManager({
+  persist: persistTaskNow,
+  canResume: _canRecoverTask,
+  isBusy: task => !!task._runningSession?._running || [...sessions.values()].some(s => s.task === task && s._running),
+  notify: _recoveryNotice,
+  // autoMode 长任务（文献复现等）：LLM 通路断开多久都不放弃，每 5 分钟重试一次，通路恢复即续跑
+  keepAlive: task => !!task.autoMode && SETTINGS.recoveryKeepAlive !== false,
+  resume: task => {
+    const { ws } = _makeHeadlessSession(task);
+    return runAgent(ws, '', [], { resume: true });
+  },
+});
+
 const app = express();
+// 远程访问口令：绑定非回环地址（手机 / 局域网）时启用，本机访问免口令
+let ACCESS_TOKEN = '';
+app.use(AccessAuth.authMiddleware(() => ACCESS_TOKEN));
 app.use(express.json({ limit: '50mb' }));
 // 欢迎页路由（必须放在 express.static 之前，否则会被 public/index.html 抢走 / 路由）
-app.get(['/', '/welcome', '/welcome.html'], (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'welcome.html'));
-});
+app.get('/', (req, res) => res.redirect('/app'));
+app.get(['/welcome', '/welcome.html'], (req, res) => res.redirect('/app'));
 app.get(['/app', '/app.html'], (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 app.use(express.static(path.join(__dirname, 'public')));
 
-app.get('/api/config', (req, res) => res.json({ workspace: WORKSPACE, model: SETTINGS.model, name: 'CFDriver', author: 'LZF', platform: process.platform, hasApiKey: !!SETTINGS.apiKey, hasParaviewExe: !!SETTINGS.paraviewExe, pythonPath: SETTINGS.pythonPath || '', provider: SETTINGS.provider || 'sf', baseUrl: SETTINGS.baseUrl || '', copilotModel: SETTINGS.copilotModel || 'gpt-4.1', copilotLoggedIn: !!COPILOT.ghToken }));
-app.get('/api/settings', (req, res) => res.json({ ...SETTINGS, apiKey: SETTINGS.apiKey ? '***' + SETTINGS.apiKey.slice(-4) : '', visionApiKey: SETTINGS.visionApiKey ? '***' + SETTINGS.visionApiKey.slice(-4) : '' }));
+app.get('/api/config', (req, res) => res.json({ models: modelChoices(), workspace: WORKSPACE, model: SETTINGS.model, name: 'CFDriver', author: 'LZF', platform: process.platform, hasApiKey: !!SETTINGS.apiKey, hasParaviewExe: !!SETTINGS.paraviewExe, pythonPath: SETTINGS.pythonPath || '', provider: SETTINGS.provider || 'sf', baseUrl: SETTINGS.baseUrl || '', copilotModel: SETTINGS.copilotModel || 'gpt-4.1', copilotLoggedIn: !!COPILOT.ghToken }));
+app.get('/api/settings', (req, res) => res.json({ ...SETTINGS, notify: undefined, apiKey: SETTINGS.apiKey ? '***' + SETTINGS.apiKey.slice(-4) : '', visionApiKey: SETTINGS.visionApiKey ? '***' + SETTINGS.visionApiKey.slice(-4) : '' }));
 app.post('/api/settings', async (req, res) => {
   const u = req.body || {};
+  try { validateApiUpdate(SETTINGS, u); }
+  catch (error) { return res.status(400).json({ error: error.message }); }
   if (u.apiKey !== undefined && !u.apiKey.startsWith('***')) SETTINGS.apiKey = u.apiKey;
   if (u.baseUrl !== undefined) SETTINGS.baseUrl = u.baseUrl;
   if (u.model !== undefined) SETTINGS.model = u.model;
@@ -6390,6 +8361,381 @@ app.post('/api/settings', async (req, res) => {
 });
 
 // ============ GitHub Copilot 端点 ============
+// ============ 多个模型接口 ============
+// 可选模型清单：主接口的当前模型 + 每个额外接口登记的模型
+function modelChoices() {
+  const out = [];
+  if (SETTINGS.provider === 'copilot') out.push({ provider: 'main', model: SETTINGS.copilotModel || 'gpt-4.1', label: 'Copilot · ' + (SETTINGS.copilotModel || 'gpt-4.1'), group: 'GitHub Copilot' });
+  else if (SETTINGS.model) out.push({ provider: 'main', model: SETTINGS.model, label: SETTINGS.model, group: '主接口' });
+  for (const p of SETTINGS.providers || []) for (const m of p.models || []) out.push({ provider: p.id, model: m, label: m, group: p.name });
+  return out;
+}
+const _maskProv = p => ({ ...p, apiKey: p.apiKey ? '***' + p.apiKey.slice(-4) : '' });
+app.get('/api/multirun', (req, res) => {
+  const groups = [...new Set([...TASKS.values()].filter(t => t.multiRun).map(t => t.multiRun.group))];
+  res.json({ groups: groups.map(multiRunSummary).filter(Boolean).sort((a, b) => b.createdAt - a.createdAt).slice(0, 20) });
+});
+app.get('/api/multirun/:group', (req, res) => { const g = multiRunSummary(req.params.group); g ? res.json(g) : res.status(404).json({ error: '没有这组多模型运行' }); });
+// 选定某个模型的结果：标记为采用，其余保留可查
+app.post('/api/multirun/:group/pick', (req, res) => {
+  const ts = [...TASKS.values()].filter(t => t.multiRun && t.multiRun.group === req.params.group);
+  if (!ts.some(t => t.id === req.body?.id)) return res.status(404).json({ error: '没有这个任务' });
+  for (const t of ts) { t.multiRun.picked = t.id === req.body.id; persistTaskNow(t); }
+  broadcastTaskState(); res.json({ ok: true });
+});
+// 综合：新建一个任务，把几个模型的结论交给指定模型对比、取长补短，给出一份合并方案
+app.post('/api/multirun/:group/fuse', (req, res) => {
+  const g = multiRunSummary(req.params.group);
+  if (!g) return res.status(404).json({ error: '没有这组多模型运行' });
+  if (g.runs.some(r => r.running)) return res.status(409).json({ error: '还有模型没跑完' });
+  const ref = req.body && req.body.model ? { provider: String(req.body.provider || 'main'), model: String(req.body.model) } : null;
+  const t = createTask(`综合 · ${g.text.slice(0, 30)}`);
+  t.modelRef = ref; t.autoMode = true; t.multiRun = { group: g.group, index: 0, of: g.runs.length, dir: `multirun/${g.group}`, fusion: true };
+  persistTaskNow(t);
+  const body = g.runs.map(r => `## 模型 ${r.index}：${r.model}\n目录：${r.dir}/（${r.fileCount} 个文件）\n步数 ${r.steps}，工具调用 ${r.tools}\n\n${r.answer || '（没有给出结论）'}`).join('\n\n---\n\n');
+  const prompt = `下面是 ${g.runs.length} 个模型各自独立完成同一任务的结论。原任务：\n> ${g.text.slice(0, 1500)}\n\n请：1) 逐项对比（做法、边界条件和参数、关键数字、是否核实过），必要时去各自目录读文件核对；2) 指出谁对谁错、各自的漏洞；3) 给出一份综合后的最佳方案，放在 multirun/${g.group}/fusion/ 下。不要重跑大算例，除非结论互相矛盾且必须验证。\n\n${body}`;
+  const { ws } = _makeHeadlessSession(t);
+  runAgent(ws, prompt, []).catch(e => console.warn('[fuse] 失败:', e.message));
+  broadcastTaskState(); res.json({ ok: true, id: t.id });
+});
+app.get('/api/providers', (req, res) => res.json({ providers: (SETTINGS.providers || []).map(_maskProv), choices: modelChoices() }));
+app.post('/api/providers', async (req, res) => {
+  let p; try { p = validateProvider(req.body || {}); } catch (e) { return res.status(400).json({ error: e.message }); }
+  const list = SETTINGS.providers || (SETTINGS.providers = []);
+  const old = p.id && list.find(x => x.id === p.id);
+  if (old) { if (!p.apiKey || p.apiKey.startsWith('***')) p.apiKey = old.apiKey; Object.assign(old, p); }
+  else { p.id = 'p' + crypto.randomBytes(4).toString('hex'); if (p.apiKey.startsWith('***')) p.apiKey = ''; list.push(p); }
+  await saveSettings(); broadcastTaskState();
+  res.json({ ok: true, id: p.id || old.id });
+});
+app.delete('/api/providers/:id', async (req, res) => {
+  SETTINGS.providers = (SETTINGS.providers || []).filter(x => x.id !== req.params.id);
+  for (const t of TASKS.values()) if (t.modelRef && t.modelRef.provider === req.params.id) { t.modelRef = null; persistTaskNow(t); }
+  await saveSettings(); broadcastTaskState(); res.json({ ok: true });
+});
+// 查一个接口能用的模型（/v1/models），让用户勾选，不用手抄模型名
+app.post('/api/providers/discover', async (req, res) => {
+  const b = req.body || {};
+  const old = b.id && (SETTINGS.providers || []).find(x => x.id === b.id);
+  const key = (!b.apiKey || String(b.apiKey).startsWith('***')) ? (old && old.apiKey) || '' : String(b.apiKey).trim();
+  let url; try { url = resolveChatConfig({ provider: 'openai', baseUrl: b.baseUrl || (old && old.baseUrl), apiKey: key || 'x', model: 'x' }).url.replace(/\/chat\/completions$/, '/models'); }
+  catch (e) { return res.json({ ok: false, error: e.message }); }
+  try {
+    const r = await fetch(url, { signal: AbortSignal.timeout(20000), headers: { Authorization: `Bearer ${key}`, 'x-api-key': key } });
+    const txt = await r.text();
+    if (!r.ok) return res.json({ ok: false, error: `接口返回 ${r.status}：${txt.slice(0, 200)}` });
+    const ids = (JSON.parse(txt).data || []).map(m => m.id).filter(Boolean).filter(id => !/image|audio|realtime|embed|tts|whisper|moderation/i.test(id));
+    res.json({ ok: true, models: ids.slice(0, 120) });
+  } catch (e) { res.json({ ok: false, error: '连不上：' + String(e.cause?.code || e.cause?.message || e.message).slice(0, 200) }); }
+});
+app.post('/api/providers/:id/test', async (req, res) => {
+  const p = (SETTINGS.providers || []).find(x => x.id === req.params.id);
+  if (!p) return res.json({ ok: false, error: '没有这个接口' });
+  const model = (req.body && req.body.model) || p.models[0];
+  if (!model) return res.json({ ok: false, error: '先登记至少一个模型' });
+  res.json(await testChatConnection(false, settingsForRef(SETTINGS, { provider: p.id, model })));
+});
+
+// ============ 设置页：求解器环境（只读，自动探测）/ 官方技能包 / MCP 服务 ============
+// 测试模型连接：真发一条 1 token 的请求，把失败原因翻成人话（填错地址、密钥无效、模型名不对、服务器连不上）
+async function testChatConnection(vision, ST = SETTINGS) {
+  const t0 = Date.now();
+  if (!vision && ST.provider === 'copilot') {
+    if (!COPILOT.ghToken) return { ok: false, error: '还没有登录 GitHub Copilot' };
+    try { await copilotRefreshApiToken(); return { ok: true, ms: Date.now() - t0, model: SETTINGS.copilotModel || 'gpt-4.1', host: 'api.githubcopilot.com' }; }
+    catch (e) { return { ok: false, error: e.message.slice(0, 300) }; }
+  }
+  let cfg;
+  try { cfg = resolveChatConfig(ST, { vision }); } catch (e) { return { ok: false, error: e.message }; }
+  if (cfg.provider === 'copilot') return { ok: true, note: '视觉沿用 Copilot' };
+  const host = (() => { try { return new URL(cfg.url).host; } catch { return cfg.url; } })();
+  try {
+    const r = await fetch(cfg.url, { method: 'POST', signal: AbortSignal.timeout(30000), headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${cfg.apiKey || 'local'}` },
+      body: JSON.stringify({ model: cfg.model, messages: [{ role: 'user', content: 'ping' }], max_tokens: 1, stream: false }) });
+    const txt = await r.text();
+    if (r.ok) return { ok: true, ms: Date.now() - t0, model: cfg.model, host };
+    const msg = (() => { try { const j = JSON.parse(txt); return j.error?.message || j.message || txt; } catch { return txt; } })().slice(0, 300);
+    const why = r.status === 401 || r.status === 403 ? '密钥无效或没有权限' : r.status === 404 ? '地址或模型 ID 不对（服务端找不到）' : r.status === 400 && /model/i.test(msg) ? '模型 ID 不对' : r.status === 429 ? '额度用完或请求太频繁' : r.status === 407 ? '代理拒绝' : `接口返回 ${r.status}`;
+    // 模型 ID 不对时，顺手问一下 /models，把这把密钥能用的模型列出来
+    let models = [];
+    if ((r.status === 404 || r.status === 400) && /model/i.test(msg)) {
+      try {
+        const mu = cfg.url.replace(/\/chat\/completions$/, '/models');
+        const mr = await fetch(mu, { signal: AbortSignal.timeout(15000), headers: { Authorization: `Bearer ${cfg.apiKey || 'local'}` } });
+        if (mr.ok) models = ((await mr.json()).data || []).map(m => m.id).filter(Boolean).filter(id => !/image|audio|realtime|embed|tts|whisper|moderation/i.test(id)).slice(0, 40);
+      } catch {}
+    }
+    return { ok: false, status: r.status, error: `${why}：${msg}${models.length ? `\n这把密钥可用的模型：${models.join('、')}` : ''}`, host, models };
+  } catch (e) {
+    const c = e.cause?.code || e.code || '';
+    const em = String(e.cause?.message || e.message);
+    const why = e.name === 'TimeoutError' || /cancel|abort|timeout|超时/i.test(em) ? '30 秒没有响应' : c === 'ENOTFOUND' ? '域名解析不到' : c === 'ECONNREFUSED' ? '对方拒绝连接（端口不对或服务没开）'
+      : /403|不允许连接本机/.test(String(e.cause?.message || e.message)) ? '不允许连接服务器本机地址' : '连不上';
+    return { ok: false, error: `${why}（${host}）${process.env.CFD_GUEST ? '。服务器所在网络需要上网认证，外网接口直连不通：在下方「用我电脑的网络」里运行出网助手后再测' : ''}：${(e.cause?.message || e.message).slice(0, 200)}`, host };
+  }
+}
+app.post('/api/settings/test', async (req, res) => res.json(await testChatConnection(!!(req.body || {}).vision)));
+app.get('/api/env', async (req, res) => {
+  try {
+    if (req.query.refresh === '1' || !ENV_INFO) { await autoProbeEnvironment(); }
+    res.json({ ...(ENV_INFO || {}), workspace: WORKSPACE, settings: { openfoamBash: SETTINGS.openfoamBash || '', foamRoot: SETTINGS.foamRoot || '', pythonPath: SETTINGS.pythonPath || '' } });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get('/api/packs', async (req, res) => {
+  try { res.json({ packs: await Cap.listPacks(SKILL_PACK_DIR, SETTINGS.packs || {}) }); } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// v0.9 在线技能目录（内置 CFD 技能 + 通用 AI 技能，可一键安装到 agent-skills/）
+const REMOTE_SKILL_CATALOG = [
+  // ─── CFD 专业技能 ───────────────────────────────────────────────────────────
+  { id: 'paper-reader', title: '论文解读', category: 'CFD', description: 'CFD 论文信息抽取协议：几何参数、BC解析、KPI对标、deviations.log登记', trigger: 'auto',
+    content: '# 论文解读技能包\n\n## 触发\n用户上传 PDF 或提到"复现论文"时自动激活。\n\n## 协议\n1. **几何**：提取关键尺寸（+来源Fig/Table/文字），列为表格\n2. **物性**：温度、压力、组分、密度、粘度、反应速率常数\n3. **边界条件**：进出口（速度/流量/成分），固壁，对称面，循环量\n4. **KPI**：原文给出的可对比指标和数值（带不确定度或偏差范围）\n5. **偏差登记**：每个与原文不一致的假设都写入 deviations.log.md，格式 `[Gn] 描述`\n6. **验收标准**：复现 KPI ≤ 10% 偏差，不确定物性用文献中间值\n' },
+  { id: 'mesh-quality', title: '网格质量', category: 'CFD', description: 'checkMesh 指标解读、snappyHexMesh 常见问题排查与修复', trigger: 'manual',
+    content: '# 网格质量技能包\n\n## 关键指标（OpenFOAM v2306）\n| 指标 | 推荐 | 上限 |\n|---|---|---|\n| maxSkewness | <2（反应流） | 4 |\n| maxNonOrthogonality | <50° | 70° |\n| minVolRatio | >0.01 | 0.001 |\n| minFaceWeight | >0.3 | — |\n\n## 常见问题\n- **负体积**：checkMesh -allTopology 找退化面 → STL 自交 → surfaceCheck\n- **高非正交**：snappyHexMesh nSmoothPatch/nRelaxIter 增大 → addLayersControls featureAngle 降低\n- **Skewness 大**：局部 refinement level 提高一级 → 或 locationInMesh 移位\n' },
+  { id: 'post-processing', title: '后处理', category: 'CFD', description: 'CFD 结果后处理流水线：时均、切片、KPI提取、可信度评估', trigger: 'manual',
+    content: '# 后处理技能包\n\n## 标准流程\n1. **时均统计**：确认 alphaMean 起始时间（通常 3–5 个τ = V/Q_g）\n2. **KPI 提取**：postProcessing/ 下的 surfaceFieldValue/volFieldValue 时间序列\n3. **质量衡算**：入口总流量 = 出口总流量 ± 2%（未达到则时均还不稳定）\n4. **可信度**：KPI与初值相比变化 <1% → 仅床层流体力学可信；KPI 显著变化 → 可信\n5. **对标**：与原文 Table/Figure 数值逐条对比，在 deviations.log.md 补充 [R1–Rn]\n' },
+  { id: 'cfd-optimization', title: 'CFD 优化', category: 'CFD', description: 'Optuna 贝叶斯优化流水线：参数空间、目标函数、验收标准', trigger: 'manual',
+    content: '# CFD 优化技能包\n\n## 标准流水线\n1. opt_study_create：指定方向（minimize/maximize）、目标 KPI、约束（convergence/physical_validity）\n2. opt_suggest_next：贝叶斯采样下一组参数\n3. opt_apply_params：写入 OpenFOAM 字典（foamDictionary）\n4. opt_run_trial：启动求解，foam_solver_run + solver_wait\n5. opt_extract_kpi：从 postProcessing 读目标指标\n6. opt_record_result：记录结果到 study\n7. opt_status：查看 Pareto/最优/收敛曲线\n\n## 注意\n- 每次试验独立验收（checkMesh + 质量衡算 + KPI 可信度）\n- 参数边界由物理约束确定，不要超出\n' },
+  { id: 'fluidized-bed', title: '流化床', category: 'CFD', description: '鼓泡床/湍动床/循环流化床的关键参数、边界条件设置与KPI体系', trigger: 'auto',
+    content: '# 流化床技能包\n\n## 关键参数\n- **最小流化速度** Umf（Ergun / Wen-Yu 公式）\n- **膨胀比** H/Hmf = 1/(1-εmf) × (1-εf)\n- **终端速度** Ut（Schiller-Naumann）\n\n## 边界条件\n- 进气：均匀速度（基准）或分布器孔口（高保真）\n- 固体进料：catin patch，αs=0.5，速度=Gs/ρs/A\n- 固体出料：catout patch，αs≥0.2，压力出口\n\n## KPI\n- 床层藏量 = volIntegrate(alpha.particles) × ρs\n- ③/⑤ 循环量：surfaceFieldValue(alphaPhi.particles) × ρs × 3600\n- 床层压降 = pInlet − pOutlet\n' },
+  // ─── AI / 编程通用技能（对标 OpenCode 官方技能库）──────────────────────────
+  { id: 'claude-api', title: 'Claude API', category: 'AI', description: 'Anthropic Claude API / SDK 参考：模型 ID、定价、流式、工具调用、MCP、缓存、token 计算', trigger: 'auto',
+    content: '# Claude API 技能包\n\n## 触发\n涉及 Claude、Anthropic、claude-* 模型、MCP、tool_use、流式输出、token 计数时自动激活。\n\n## 当前模型（2026-11）\n| 模型 | 上下文 | 用途 |\n|---|---|---|\n| claude-opus-5-5 | 200k | 最强推理/复杂代码 |\n| claude-sonnet-4-5 | 200k | 均衡生产 |\n| claude-haiku-3-5 | 200k | 快速/低成本 |\n\n## 关键参数\n```python\nfrom anthropic import Anthropic\nclient = Anthropic(api_key="...")\nmsg = client.messages.create(\n    model="claude-opus-5-5",\n    max_tokens=8096,\n    system="...",\n    messages=[{"role":"user","content":"..."}]\n)\n```\n\n## Tool Use\n```json\n{ "type": "tool_use", "id": "toolu_01", "name": "fn", "input": {...} }\n```\n结果用 `{"type":"tool_result","tool_use_id":"toolu_01","content":"..."}`\n\n## 提示缓存\n在长 system prompt 末尾标 `{"type":"text","text":"...","cache_control":{"type":"ephemeral"}}`\n\n## MCP 集成\n使用 `anthropic.beta.messages.create` 并传 `mcp_servers` 参数，或通过 SDK 的 MCPClient 连接 stdio 服务器。\n' },
+  { id: 'code-review', title: '代码审查', category: 'AI', description: '系统化代码 Review 协议：安全、性能、可维护性、测试覆盖', trigger: 'manual',
+    content: '# 代码审查技能包\n\n## 审查维度（优先级从高到低）\n1. **安全**：SQL注入、XSS、SSRF、硬编码凭证、权限绕过\n2. **正确性**：边界条件、空值处理、并发竞争、溢出\n3. **性能**：N+1 查询、不必要的复制、内存泄漏、阻塞调用\n4. **可维护性**：函数长度 <40 行、命名清晰、单一职责\n5. **测试**：关键路径覆盖、错误路径、边界值\n\n## 输出格式\n每条评论：`[严重度] 文件:行 — 问题描述 → 建议修改`\n严重度：CRITICAL / HIGH / MEDIUM / LOW / NIT\n\n## 自动检查清单\n- [ ] 无 console.log/print 调试语句留存\n- [ ] 所有外部输入都经过验证\n- [ ] 密钥不在代码中硬编码\n- [ ] 异步函数都有错误处理\n- [ ] 修改不破坏现有测试\n' },
+  { id: 'frontend-design', title: '前端设计', category: 'AI', description: '现代前端 UI 设计指导：布局、色彩、排版、可访问性、响应式', trigger: 'manual',
+    content: '# 前端设计技能包\n\n## 设计原则\n- **间距**：4/8/12/16/24/32px 格栅，不用随意数字\n- **字体**：标题 font-weight 700, 正文 400/500, 辅助 400+opacity\n- **色彩**：主色、中性色、语义色（success/warning/error/info）\n- **圆角**：统一用 CSS 变量 --radius（4/6/8/12px 选一组）\n\n## 可访问性\n- 对比度 WCAG AA（正文 ≥4.5:1，大字 ≥3:1）\n- 所有交互元素有 focus-visible 样式\n- 图标配 aria-label 或 aria-hidden\n- 颜色不是唯一信息载体\n\n## 响应式\n- Mobile-first：先写 ≤480px，用 min-width 媒体查询往上扩展\n- 触摸目标 ≥44×44px\n- 表格窄屏横向滚动（overflow-x: auto）\n\n## CSS 变量模板\n```css\n:root {\n  --radius: 8px;\n  --font-sans: system-ui, -apple-system, sans-serif;\n  --primary: #2563eb;\n  --foreground: #0f172a;\n  --muted: #64748b;\n  --border: #e2e8f0;\n}\n```\n' },
+  { id: 'mcp-builder', title: 'MCP 服务构建', category: 'AI', description: '构建高质量 MCP 服务器：工具设计、Python FastMCP、Node SDK、测试', trigger: 'manual',
+    content: '# MCP 服务构建技能包\n\n## MCP 核心概念\n- **Tools**：LLM 可调用的函数，有 JSON Schema 参数，返回 TextContent/ImageContent\n- **Resources**：LLM 可读取的数据（文件、DB 记录、API 响应）\n- **Prompts**：预制的提示模板\n- **Transport**：stdio（本地）或 HTTP+SSE（远程）\n\n## Python FastMCP 快速开始\n```python\nfrom fastmcp import FastMCP\nmcp = FastMCP("my-server")\n\n@mcp.tool()\ndef get_weather(city: str) -> str:\n    """Get current weather for a city.\"\"\"\n    return f"Weather in {city}: 25°C sunny"\n\nif __name__ == "__main__":\n    mcp.run()  # stdio by default\n```\n\n## Node.js SDK\n```typescript\nimport { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";\nimport { z } from "zod";\nconst server = new McpServer({ name: "demo", version: "1.0.0" });\nserver.tool("add", { a: z.number(), b: z.number() }, async ({ a, b }) => ({\n  content: [{ type: "text", text: `${a + b}` }]\n}));\n```\n\n## 工具设计原则\n1. 名称动词开头：`get_`, `create_`, `update_`, `delete_`, `list_`\n2. 描述精确：说清楚输入期望、输出格式、可能的错误\n3. 参数原子化：一个工具做一件事\n4. 返回结构化信息 + 可读摘要\n' },
+  { id: 'research-assistant', title: '研究助手', category: 'AI', description: '系统化信息检索与综合：搜索策略、来源评估、引用格式、事实核查', trigger: 'manual',
+    content: '# 研究助手技能包\n\n## 检索策略\n1. 先用宽泛查询定位领域综述，再用精确查询找具体数据\n2. 交叉检验：同一事实至少 2 个独立来源\n3. 权威来源优先：学术期刊 > 政府/机构报告 > 行业白皮书 > 新闻\n\n## 来源质量评估\n- **一手资料**：原始数据、论文、官方文档\n- **二手资料**：综述、教材、百科\n- 检查发布日期：技术类 ≤3 年，科学类视领域而定\n\n## 输出结构\n```\n## 结论摘要（3–5 句）\n## 关键发现\n- 发现 1（来源：作者, 年份）\n- 发现 2（来源：...）\n## 不确定性 / 存在争议的点\n## 参考来源\n[1] ...\n```\n\n## 注意\n- 知识截止日期之后的事实必须通过搜索工具确认\n- 数字、统计数据必须给出来源\n- 不确定的内容明确标记"需核实"\n' },
+  { id: 'math-formula', title: '数学与公式', category: 'AI', description: '数学推导、LaTeX 公式排版、数值计算、科学记数与单位转换', trigger: 'auto',
+    content: '# 数学与公式技能包\n\n## LaTeX 格式规范\n- 行内公式：`$E = mc^2$`\n- 独立公式：`$$\\frac{\\partial u}{\\partial t} + u \\cdot \\nabla u = -\\nabla p + \\nu \\nabla^2 u$$`\n- 矩阵：`\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}`\n- 向量：`\\vec{u}` 或 `\\mathbf{u}`\n\n## 数值计算原则\n- 中间结果保留 4–6 位有效数字\n- 最终结果与输入精度匹配\n- 量纲分析优先于数值代入\n\n## 单位转换常用\n| 物理量 | SI 单位 | 常用换算 |\n|---|---|---|\n| 压力 | Pa | 1 atm = 101325 Pa |\n| 温度 | K | T(K) = T(°C) + 273.15 |\n| 动力粘度 | Pa·s | 1 cP = 0.001 Pa·s |\n| 速度 | m/s | 1 m/s = 3.6 km/h |\n\n## 推导规范\n1. 先写出出发公式（带编号）\n2. 每步变换注明依据\n3. 最终结果框出\n4. 给出量纲检验\n' },
+  { id: 'doc-writing', title: '文档写作', category: 'AI', description: '技术文档、设计文档、API文档的结构与写作规范', trigger: 'manual',
+    content: '# 文档写作技能包\n\n## 文档类型与结构\n\n### 技术规格（Design Doc）\n```\n# 标题 — 状态：草稿/审核/已批准\n## 背景与动机\n## 目标与非目标\n## 方案设计\n### 方案 A（推荐）\n### 方案 B（备选）\n## 实现细节\n## 测试计划\n## 风险与缓解\n## 时间线\n```\n\n### API 参考文档\n```markdown\n## `function_name(param1, param2)`\n**描述**：一句话说清楚这个函数做什么。\n**参数**：\n- `param1` (string, required): ...\n- `param2` (number, optional, default: 0): ...\n**返回值**：...\n**示例**：\n\`\`\`python\nresult = function_name("hello", 42)\n\`\`\`\n**异常**：`ValueError` 当 ... 时抛出\n```\n\n## 写作原则\n- 读者优先：先说"为什么"，再说"怎么做"\n- 主动语态，动词开头\n- 代码示例可运行、可复制\n- 版本号和日期标注在文件头\n' },
+  { id: 'agent-orchestration', title: '智能体编排', category: 'AI', description: '多智能体系统设计：任务分解、并发协调、工具链、错误恢复', trigger: 'manual',
+    content: '# 智能体编排技能包\n\n## 核心模式\n\n### 1. 顺序链（Sequential Chain）\n每步输出作为下一步输入，适合有依赖关系的任务。\n```\nplanner → researcher → writer → reviewer\n```\n\n### 2. 并行扇出（Parallel Fan-out）\n独立子任务并发执行，最后汇总。\n```\norchestrator → [task-A, task-B, task-C] → aggregator\n```\n\n### 3. 判断路由（Judge Router）\n中间检查点决定后续路径。\n```\ntask → executor → judge → (pass: done | fail: retry/escalate)\n```\n\n## 设计原则\n1. **幂等性**：工具调用可安全重试\n2. **状态外化**：中间状态写文件/DB，不靠上下文记忆\n3. **超时保护**：每个子任务设最长运行时间\n4. **错误隔离**：一个子任务失败不影响其他\n\n## 提示工程\n- 子智能体 prompt 携带完整上下文（不靠父级历史）\n- 明确输出格式（JSON Schema > 自由文本）\n- "做完这步就停下，等待确认" 避免越权\n' },
+  { id: 'openai-api', title: 'OpenAI API', category: 'AI', description: 'OpenAI API 参考：GPT/o系列模型、函数调用、流式、Assistants、Embeddings', trigger: 'auto',
+    content: '# OpenAI API 技能包\n\n## 当前模型（2026-11）\n| 模型 | 上下文 | 用途 |\n|---|---|---|\n| gpt-4o | 128k | 旗舰多模态 |\n| gpt-4o-mini | 128k | 快速低成本 |\n| o3 | 200k | 深度推理 |\n| o4-mini | 200k | 快速推理 |\n\n## Chat Completions\n```python\nfrom openai import OpenAI\nclient = OpenAI(api_key="...")\nresp = client.chat.completions.create(\n    model="gpt-4o",\n    messages=[{"role":"user","content":"Hello"}],\n    tools=[...],  # 函数调用\n    stream=True\n)\n```\n\n## 函数调用\n```json\n{\n  "type": "function",\n  "function": {\n    "name": "get_weather",\n    "description": "Get weather",\n    "parameters": {"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}\n  }\n}\n```\n\n## 结构化输出\n传 `response_format={"type":"json_schema","json_schema":{...}}` 保证合法 JSON 输出。\n\n## Embeddings\n```python\nembedding = client.embeddings.create(model="text-embedding-3-large", input="text").data[0].embedding\n```\n' },
+];
+app.get('/api/skills/catalog', (req, res) => res.json({ skills: REMOTE_SKILL_CATALOG }));
+app.post('/api/skills/install', async (req, res) => {
+  try {
+    const { id } = req.body || {};
+    const skill = REMOTE_SKILL_CATALOG.find(s => s.id === id);
+    if (!skill) return res.status(404).json({ error: '未找到技能: ' + id });
+    const dir = path.join(SKILL_PACK_DIR, id);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'SKILL.md'), skill.content, 'utf8');
+    res.json({ ok: true, id, title: skill.title });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.delete('/api/skills/installed/:id', async (req, res) => {
+  try {
+    const id = req.params.id;
+    if (!/^[\w-]+$/.test(id)) return res.status(400).json({ error: '非法id' });
+    const dir = path.join(SKILL_PACK_DIR, id);
+    await fs.rm(dir, { recursive: true, force: true });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get('/api/packs/:id', async (req, res) => {
+  try { res.type('text/plain').send(await Cap.readPackFile(SKILL_PACK_DIR, req.params.id, String(req.query.file || ''))); } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.post('/api/packs/:id', async (req, res) => {
+  try {
+    if (!/^[\w.-]+$/.test(req.params.id)) throw new Error('技能包名不合法');
+    SETTINGS.packs = { ...(SETTINGS.packs || {}), [req.params.id]: !!(req.body || {}).enabled };
+    await saveSettings(); await refreshPackIndex();
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+const _mcpView = () => (SETTINGS.mcpServers || []).map(c => { const m = MCP.get(c.name); return { name: c.name, command: c.command, args: c.args || [], env: Object.keys(c.env || {}), enabled: c.enabled !== false, status: m ? m.status : 'stopped', error: m ? m.error : '', tools: m ? m.tools.map(t => ({ name: t.name, description: (t.description || '').slice(0, 200) })) : [] }; });
+app.get('/api/mcp', (req, res) => res.json({ servers: _mcpView() }));
+app.post('/api/mcp', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const name = String(b.name || '').trim();
+    if (!/^[\w-]{1,32}$/.test(name)) throw new Error('名字只能用字母、数字、_、-（≤32）');
+    const cmd = String(b.command || '').trim(); if (!cmd) throw new Error('缺少启动命令');
+    const args = Array.isArray(b.args) ? b.args.map(String) : String(b.args || '').split(/\s+/).filter(Boolean);
+    const prev = (SETTINGS.mcpServers || []).find(x => x.name === name);
+    const env = b.env && typeof b.env === 'object' ? Object.fromEntries(Object.entries(b.env).map(([k, v]) => [String(k), String(v)])) : (prev ? prev.env : {});
+    const cfg = { name, command: cmd, args, env, enabled: b.enabled !== false };
+    SETTINGS.mcpServers = [...(SETTINGS.mcpServers || []).filter(x => x.name !== name), cfg];
+    await saveSettings(); await startMcpServers();
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.delete('/api/mcp/:name', async (req, res) => {
+  SETTINGS.mcpServers = (SETTINGS.mcpServers || []).filter(x => x.name !== req.params.name);
+  await saveSettings(); await startMcpServers(); res.json({ ok: true });
+});
+app.post('/api/mcp/:name/restart', async (req, res) => { await startMcpServers(); res.json({ ok: true }); });
+
+
+// （外部通知与状态总览端点紧随其后，Copilot 端点在它们下面）
+
+// ============ 外部通知（手机推送）============
+const _maskHook = u => { try { const x = new URL(u); return `${x.origin}${x.pathname.slice(0, 12)}…`; } catch { return ''; } };
+app.get('/api/notify', (req, res) => {
+  const c = SETTINGS.notify || {};
+  res.json({ enabled: !!c.enabled, webhook: c.webhook ? _maskHook(c.webhook) : '', hasWebhook: !!c.webhook, kind: c.kind || '',
+    events: c.events || Notify.EVENT_KINDS, publicUrl: c.publicUrl || '', allEvents: Notify.EVENT_KINDS,
+    envWebhook: !!process.env.CFD_NOTIFY_WEBHOOK, history: NOTIFIER.history().slice(0, 20) });
+});
+app.post('/api/notify', async (req, res) => {
+  const u = req.body || {};
+  const cur = SETTINGS.notify || {};
+  try {
+    // webhook 留空或掩码 = 保持原值
+    const webhook = u.webhook === undefined || /…$/.test(String(u.webhook)) ? cur.webhook : u.webhook;
+    SETTINGS.notify = Notify.validateNotifyConfig({ ...cur, ...u, webhook });
+  } catch (e) { return res.status(400).json({ error: e.message }); }
+  await saveSettings(); res.json({ ok: true });
+});
+app.post('/api/notify/test', async (req, res) => {
+  const r = await NOTIFIER.send({ kind: 'task_complete', force: true, title: '🔔 CFDriver 通知测试', body: `来自 ${os.hostname()} 的测试消息` });
+  res.json({ ok: !!r.delivered, status: r.status, error: r.error || (SETTINGS.notify?.webhook || process.env.CFD_NOTIFY_WEBHOOK ? '' : '未配置 webhook') });
+});
+
+// ============ 全局状态总览（手机首页 / 外部脚本）============
+app.get('/api/status', (req, res) => {
+  const runs = [...SOLVER_RUNS.values()].filter(r => !r.ended)
+    .map(r => ({ runId: r.runId, kind: r.kind, casePath: r.casePath, started: r.started, taskId: r.ownerTaskId, taskTitle: _taskTitle(r.ownerTaskId),
+      last: (r.log || []).slice(-1)[0] || '' }));
+  const tasks = [...TASKS.values()].map(t => ({ id: t.id, title: t.title, updatedAt: t.updatedAt,
+    running: !!(t._runningSession && t._runningSession._running), awaitingApproval: !!t.awaitingApproval,
+    pendingQuestion: t.pendingQuestion ? String(t.pendingQuestion.text || '').slice(-300) : '',
+    goal: t.goal ? { text: t.goal.text, status: t.goal.status } : null }))
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)).slice(0, 30);
+  const [l1, l5, l15] = os.loadavg();
+  res.json({ host: os.hostname(), platform: process.platform, cpus: os.availableParallelism?.() ?? os.cpus().length, load: [l1, l5, l15],
+    mem: { total: os.totalmem(), free: os.freemem() }, uptime: process.uptime(), runs, tasks,
+    attention: tasks.filter(t => t.awaitingApproval || t.pendingQuestion).length });
+});
+
+// ============ 实时监视（/monitor）：本服务登记的求解 + 机器上其它 OpenFOAM 并行作业 + RSI 档案 + 智能体近况 ============
+const MON_RATE = new Monitor.RateTracker();
+const RSI_ROOT = process.env.RSI_DIST_ROOT || path.join(os.homedir(), 'mto_repro', 'rsi_dist');
+// Linux：按 /proc 找正在跑的 *Foam -parallel 进程，按工作目录归组（核数 = 进程数）
+function _foamProcs() {
+  const groups = new Map();
+  if (process.platform !== 'linux') return groups;
+  for (const p of _foamProcSnapshot(5000)) {
+    // 统计所有 Foam 进程（串行 + 并行各算 1 核），不再只看 -parallel
+    const g = groups.get(p.cwd) || { solver: path.basename(p.argv[0]), np: 0, parallel: false };
+    g.np++;
+    if (p.argv.includes('-parallel')) g.parallel = true;
+    groups.set(p.cwd, g);
+  }
+  return groups;
+}
+function _caseLog(dir) {
+  const rsi = path.join(dir, 'logs', 'solve.stdout.log');
+  if (fssync.existsSync(rsi)) return rsi;
+  let best = null;
+  try {
+    for (const f of fssync.readdirSync(dir)) {
+      if (!/^log\./.test(f)) continue;
+      const st = fssync.statSync(path.join(dir, f));
+      if (!best || st.mtimeMs > best.m) best = { f: path.join(dir, f), m: st.mtimeMs };
+    }
+  } catch {}
+  return best && best.f;
+}
+function _monJob(key, caseDir, logFile, extra = {}) {
+  const tl = logFile ? Monitor.tailText(logFile) : null;
+  const now = tl ? Monitor.lastTime(tl.text) : null;
+  if (now !== null) MON_RATE.add(key, now);
+  const { end } = Monitor.readEndTime(caseDir);
+  const start = logFile ? Monitor.firstTime(logFile) : null;
+  const rate = Monitor.rateFromLog(tl && tl.text) ?? MON_RATE.rate(key);
+  const step = Monitor.lastStepInfo(tl && tl.text);
+  return { key, caseDir, log: logFile, now, start, end, rate, ...Monitor.progress({ start, end, now, rate }), ...step,
+    logAgeS: tl ? Math.round((Date.now() - tl.mtime) / 1000) : null, history: MON_RATE.history(key).slice(-120),
+    tail: tl ? tl.text.split('\n').filter(l => /^(Time|Courant|deltaT|ExecutionTime|PIMPLE|FOAM|End)/.test(l)).slice(-6) : [], ...extra };
+}
+function _taskBrief(t) {
+  const msgs = (t.messages || []).slice(-8).map(m => {
+    let c = m.content; if (Array.isArray(c)) c = c.map(x => x.text || '').join(' ');
+    const calls = (m.tool_calls || []).map(x => x.function?.name).filter(Boolean);
+    return { role: m.role, text: String(c || '').replace(/\s+/g, ' ').slice(0, 280), tools: calls };
+  }).filter(m => m.text || m.tools.length);
+  return { id: t.id, title: t.title, updatedAt: t.updatedAt, running: !!(t._runningSession && t._runningSession._running),
+    autoMode: !!t.autoMode, awaitingApproval: !!t.awaitingApproval, goal: t.goal ? t.goal.status : null, recent: msgs };
+}
+// 作业属于哪个任务：登记时的 ownerTaskId；没有的（run_command 里前台跑的 mpirun、手动起的）按算例目录对上任务的当前算例
+function _taskIdForCase(dir) {
+  let best = null;
+  for (const t of TASKS.values()) {
+    const cd = _taskCaseDir(t);
+    if (!cd || (dir !== cd && !dir.startsWith(cd + path.sep))) continue;
+    if (!best || (t.updatedAt || 0) > (best.updatedAt || 0)) best = t;
+  }
+  return best ? best.id : '';
+}
+app.get('/api/monitor', (req, res) => {
+  try {
+    const jobs = [], seen = new Set();
+    for (const r of SOLVER_RUNS.values()) {
+      if (r.ended) continue;
+      const dir = path.resolve(r.casePath || WORKSPACE); seen.add(dir);
+      const owner = r.ownerTaskId || _taskIdForCase(dir);
+      const lf = r.redirLog || _redirectTarget(r.command, r.casePath) || r.logFile || _caseLog(dir);
+      jobs.push(_monJob('run:' + r.runId, dir, lf, { source: dir.includes(`${path.sep}rsi_dist${path.sep}`) ? 'rsi' : !r.external ? 'agent' : owner ? 'task' : 'external', runId: r.runId, taskId: owner || null, task: _taskTitle(owner), command: String(r.command || '').slice(0, 200) }));
+    }
+    const procs = _foamProcs();
+    for (const [dir, g] of procs) {
+      const j = seen.has(dir) ? jobs.find(x => x.caseDir === dir) : null;
+      if (j) { j.np = g.np; j.solver = g.solver; continue; }
+      jobs.push(_monJob('ext:' + dir, dir, _caseLog(dir), { source: dir.includes(`${path.sep}rsi_dist${path.sep}`) ? 'rsi' : _taskIdForCase(dir) ? 'task' : 'external', taskId: _taskIdForCase(dir) || null, task: _taskTitle(_taskIdForCase(dir)), np: g.np, solver: g.solver }));
+    }
+    const cpus = os.availableParallelism?.() ?? os.cpus().length, busy = [...procs.values()].reduce((s, g) => s + g.np, 0);
+    res.json({ at: Date.now(), host: os.hostname(), cpus, busyCores: busy, load: os.loadavg(), mem: { total: os.totalmem(), free: os.freemem() },
+      jobs, rsi: Monitor.rsiSnapshot(RSI_ROOT),
+      tasks: [...TASKS.values()].filter(t => t._runningSession?._running || Date.now() - (t.updatedAt || 0) < 48 * 3600e3)
+        .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)).slice(0, 3).map(_taskBrief) });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get(['/monitor', '/monitor.html'], (req, res) => res.sendFile(path.join(__dirname, 'public', 'monitor.html')));
+// 算例总览卡：求解器、网格、边界区、最新时刻、结果文件（只读）
+app.get('/api/case/overview', (req, res) => {
+  try {
+    const dir = _postCase(String(req.query.case || ''));
+    const job = [...SOLVER_RUNS.values()].find(r => !r.ended && path.resolve(r.casePath || '') === dir);
+    res.json({ case: path.relative(WORKSPACE, dir) || '.', ...Monitor.caseOverview(dir), running: !!job || _foamProcs().has(dir),
+      hasGeometry: fssync.existsSync(path.join(dir, 'constant', 'triSurface')) });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+// 求解告警：FATAL/NaN、Courant 超限、日志停更 → 推送到对话（同一告警 30 min 内只推一次）
+const MON_ALERTS = new Monitor.AlertGate(30 * 60_000);
+function _pushSolverAlerts() {
+  if (!allClients.size) return;
+  const jobs = [];
+  for (const r of SOLVER_RUNS.values()) {
+    if (r.ended) continue;
+    const dir = path.resolve(r.casePath || WORKSPACE);
+    jobs.push([_monJob('run:' + r.runId, dir, r.redirLog || _redirectTarget(r.command, r.casePath) || r.logFile || _caseLog(dir)), r.ownerTaskId]);
+  }
+  for (const [job, owner] of jobs) {
+    for (const a of Monitor.jobAlerts(job, { maxCo: Monitor.readMaxCo(job.caseDir) })) {
+      if (!MON_ALERTS.should(job.key + ':' + a.kind)) continue;
+      const msg = JSON.stringify({ type: 'solver_alert', ...a, case: path.relative(WORKSPACE, job.caseDir) || '.', runId: job.runId || job.key.replace(/^run:/, ''),
+        taskId: owner || null, now: job.now, coMax: job.coMax, tail: job.tail });
+      for (const c of allClients) if (c.readyState === 1) c.send(msg);
+    }
+  }
+}
+// 后台每分钟采一次样，页面没开时速率也有历史
+setInterval(() => {
+  try {
+    for (const r of SOLVER_RUNS.values()) if (!r.ended) { const lf = r.redirLog || _redirectTarget(r.command, r.casePath); const tl = lf && Monitor.tailText(lf, 256 << 10); const t = tl && Monitor.lastTime(tl.text); if (t !== null && t !== undefined) MON_RATE.add('run:' + r.runId, t); }
+    for (const dir of _foamProcs().keys()) { if ([...SOLVER_RUNS.values()].some(r => !r.ended && path.resolve(r.casePath || '') === dir)) continue; const lf = _caseLog(dir); const tl = lf && Monitor.tailText(lf, 256 << 10); const t = tl && Monitor.lastTime(tl.text); if (t !== null && t !== undefined) MON_RATE.add('ext:' + dir, t); }
+  } catch {}
+  try { _pushSolverAlerts(); } catch (e) { console.warn('[alerts]', e.message); }
+}, 60_000).unref();
+
 app.get('/api/copilot/status', (req, res) => res.json({ loggedIn: !!COPILOT.ghToken, provider: SETTINGS.provider, model: SETTINGS.copilotModel }));
 app.post('/api/copilot/auth/start', async (req, res) => {
   try { res.json(await copilotDeviceStart()); } catch (e) { res.status(500).json({ error: String(e.message || e) }); }
@@ -6452,7 +8798,7 @@ app.post('/api/aliyun/select', async (req, res) => {
 
 app.post('/api/workspace', async (req, res) => {
   const { dir } = req.body; if (!dir) return res.status(400).json({ error: '缺少 dir' });
-  WORKSPACE = path.resolve(dir); SETTINGS.workspace = WORKSPACE; await saveSettings();
+  WORKSPACE = path.resolve(dir); SETTINGS.workspace = WORKSPACE; await _projTouch(WORKSPACE);
   res.json({ workspace: WORKSPACE }); broadcastTree();
 });
 app.get('/api/tree', async (req, res) => { try { res.json(await buildTree()); } catch (e) { res.status(500).json({ error: String(e) }); } });
@@ -6469,7 +8815,9 @@ app.get('/api/file', async (req, res) => {
         '.png':'image/png', '.jpg':'image/jpeg', '.jpeg':'image/jpeg', '.gif':'image/gif',
         '.webp':'image/webp', '.bmp':'image/bmp', '.svg':'image/svg+xml', '.ico':'image/x-icon',
         '.stl':'model/stl', '.obj':'text/plain',
-        '.pdf':'application/pdf'
+        '.pdf':'application/pdf', '.csv':'text/csv; charset=utf-8', '.txt':'text/plain; charset=utf-8',
+        '.mp4':'video/mp4', '.webm':'video/webm', '.mov':'video/quicktime', '.ogv':'video/ogg',
+        '.md':'text/plain; charset=utf-8', '.log':'text/plain; charset=utf-8', '.json':'application/json; charset=utf-8', '.dat':'text/plain; charset=utf-8'
       };
       res.setHeader('Content-Type', MIME[ext] || 'application/octet-stream');
       // PDF 必须 inline，否则浏览器走下载分支，iframe 渲染不出来
@@ -6495,19 +8843,90 @@ app.get('/api/file', async (req, res) => {
         const head = Buffer.alloc(SOFT_MAX);
         await fh.read(head, 0, SOFT_MAX, 0);
         const banner = `\n\n... [文件共 ${(stat.size/1024/1024).toFixed(2)} MB，仅预览前 2 MB；可用 read_document 或 grep_search 处理全部内容] ...\n`;
-        return res.json({ content: head.toString('utf8') + banner, truncated: true, size: stat.size });
+        const cut = head.lastIndexOf(0x0a); const body = (cut > 0 ? head.subarray(0, cut + 1) : head).toString('utf8');
+        return res.json({ content: body + banner, truncated: true, size: stat.size, mtime: stat.mtimeMs });
       }
     } finally { await fh.close(); }
-    res.json({ content: await fs.readFile(f, 'utf8'), size: stat.size });
+    res.json({ content: await fs.readFile(f, 'utf8'), size: stat.size, mtime: stat.mtimeMs });
   } catch (e) { res.status(500).json({ error: String(e.message) }); }
 });
 app.post('/api/file', async (req, res) => {
-  try { const { path: p, content } = req.body;
+  try { const { path: p, content, mtime, force } = req.body;
     if (typeof p !== 'string' || typeof content !== 'string') return res.status(400).json({ error: '参数错误' });
     const f = safePath(p); await fs.mkdir(path.dirname(f), { recursive: true });
-    await fs.writeFile(f, content, 'utf8'); broadcastTree();
-    res.json({ ok: true, bytes: Buffer.byteLength(content, 'utf8') });
+    // 冲突检测：打开后磁盘文件被智能体/求解器改过，不静默覆盖
+    if (typeof mtime === 'number' && !force) {
+      const st = await fs.stat(f).catch(() => null);
+      if (st && Math.abs(st.mtimeMs - mtime) > 1) return res.status(409).json({ conflict: true, error: '文件在打开后已被修改', mtime: st.mtimeMs });
+    }
+    // 原子写：先写临时文件再 rename，写到一半崩溃不会留下半截文件
+    const tmp = f + '.cfdtmp-' + process.pid;
+    await fs.writeFile(tmp, content, 'utf8'); await fs.rename(tmp, f);
+    const st = await fs.stat(f); broadcastTree();
+    res.json({ ok: true, bytes: Buffer.byteLength(content, 'utf8'), mtime: st.mtimeMs });
   } catch (e) { res.status(500).json({ error: String(e.message) }); }
+});
+// 文件状态（查看器每 2 s 轮询：磁盘上变了且本地没有未保存编辑，就静默重新加载）
+app.get('/api/stat', async (req, res) => {
+  try {
+    const st = await fs.stat(safePath(req.query.path));
+    res.json({ exists: true, isDir: st.isDirectory(), size: st.size, mtime: st.mtimeMs });
+  } catch (e) { res.json({ exists: false }); }
+});
+// 对话里提到的路径 → 工作区内真实存在的文件（界面把它们变成可点击链接 / 内联图片）。
+// 基准目录：请求给的（界面已知的产物目录）+ 该任务当前算例目录 + 该任务跑过的算例目录
+app.post('/api/resolve', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const bases = Array.isArray(body.bases) ? body.bases.filter(b => typeof b === 'string').slice(0, 6) : [];
+    const task = TASKS.get(String(body.taskId || ''));
+    if (task) {
+      if (task.workMem && task.workMem.casePath) bases.unshift(String(task.workMem.casePath));
+      for (const r of SOLVER_RUNS.values()) if (r.ownerTaskId === task.id && r.casePath && !bases.includes(r.casePath)) bases.push(r.casePath);
+    }
+    res.json({ found: await resolveMentioned({ workspace: WORKSPACE, paths: body.paths, bases }) });
+  } catch (e) { res.status(500).json({ error: String(e.message), found: {} }); }
+});
+// 偏离审批卡片：任务当前算例的 deviations.log.md → 每条一张卡（状态、证据图、是否在等用户决定）
+function _taskCaseDir(task) {
+  const cp = task && task.workMem && task.workMem.casePath;
+  if (!cp) return '';
+  const p = String(cp).replace(/^~(?=[\\/])/, os.homedir());
+  return path.isAbsolute(p) ? p : path.resolve(WORKSPACE, p);
+}
+app.get('/api/deviations', async (req, res) => {
+  try {
+    const task = TASKS.get(String(req.query.taskId || ''));
+    if (!task) return res.json({ file: '', entries: [], caseImages: [], waiting: 0 });
+    const v = await Fidelity.deviationView({ task, workspace: WORKSPACE, caseDir: _taskCaseDir(task) });
+    if (v.noted) schedulePersistTask(task);
+    res.json({ ...v.data, running: !!(task._runningSession && task._runningSession._running), awaiting: !!(task.awaitingUserChoice || task.pendingQuestion) });
+  } catch (e) { res.status(500).json({ error: String(e.message), entries: [] }); }
+});
+// 用户在卡片上的决定：写回登记文件和任务状态，返回要发给智能体的消息（由界面经 WebSocket 当作用户消息发出）
+app.post('/api/deviations/decide', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const task = TASKS.get(String(body.taskId || ''));
+    if (!task) return res.status(404).json({ ok: false, error: '任务不存在' });
+    const r = await Fidelity.decideDeviations({ task, workspace: WORKSPACE, caseDir: _taskCaseDir(task), decisions: body.decisions });
+    if (!r.ok) return res.status(r.status || 400).json(r);
+    persistTaskNow(task); broadcastTree();
+    console.log(`[deviations] 任务 ${task.id} 用户决定：${r.applied.join(', ')}；仍未放行 ${r.open.length} 条`);
+    res.json(r);
+  } catch (e) { res.status(500).json({ ok: false, error: String(e.message) }); }
+});
+// 预览图集：同目录下可预览的图片/PDF（按名字自然排序），供查看器的上一张/下一张
+app.get('/api/siblings', async (req, res) => {
+  try {
+    const f = safePath(req.query.path); const dir = path.dirname(f);
+    const RE = /\.(png|jpe?g|gif|webp|bmp|svg|pdf)$/i;
+    const es = await fs.readdir(dir, { withFileTypes: true });
+    const files = es.filter(e => e.isFile() && RE.test(e.name) && !e.name.startsWith('.'))
+      .map(e => e.name).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }))
+      .slice(0, 500).map(n => path.relative(WORKSPACE, path.join(dir, n)).replaceAll('\\', '/'));
+    res.json({ files });
+  } catch (e) { res.status(500).json({ error: String(e.message), files: [] }); }
 });
 // 二进制附件上传（PDF/DOCX/PPTX/XLSX/图片等）：保存到 .cache/uploads/<safe>/ 下，返回相对路径
 app.post('/api/upload', async (req, res) => {
@@ -6545,89 +8964,195 @@ app.get('/api/list-abs', async (req, res) => {
     res.json({ cwd: dir, parent: path.dirname(dir) === dir ? null : path.dirname(dir), items });
   } catch (e) { res.status(500).json({ error: String(e.message) }); }
 });
+// ===== 项目（工作区）列表：最近打开、新建、切换 =====
+function _projList() { return Array.isArray(SETTINGS.projects) ? SETTINGS.projects : []; }
+async function _projTouch(dir) {
+  const p = path.resolve(dir), list = _projList().filter(x => path.resolve(x.path) !== p);
+  list.unshift({ path: p, name: path.basename(p) || p, openedAt: Date.now() });
+  SETTINGS.projects = list.slice(0, 30); await saveSettings();
+}
+async function _projInfo(x) {
+  const out = { ...x, exists: false, cases: 0, git: false };
+  try {
+    out.exists = (await fs.stat(x.path)).isDirectory();
+    if (out.exists) {
+      out.git = fssync.existsSync(path.join(x.path, '.git'));
+      const ents = await fs.readdir(x.path, { withFileTypes: true });
+      for (const e of ents) if (e.isDirectory() && fssync.existsSync(path.join(x.path, e.name, 'system', 'controlDict'))) out.cases++;
+    }
+  } catch {}
+  return out;
+}
+app.get('/api/projects', async (req, res) => {
+  try {
+    if (!_projList().some(x => path.resolve(x.path) === WORKSPACE)) await _projTouch(WORKSPACE);
+    res.json({ current: WORKSPACE, home: os.homedir(), projects: await Promise.all(_projList().map(_projInfo)) });
+  } catch (e) { res.status(500).json({ error: String(e.message) }); }
+});
+app.post('/api/projects/open', async (req, res) => {
+  try {
+    const dir = path.resolve(String(req.body?.dir || ''));
+    if (!req.body?.dir || !(await fs.stat(dir)).isDirectory()) return res.status(400).json({ error: '不是目录' });
+    WORKSPACE = dir; SETTINGS.workspace = dir; await _projTouch(dir);
+    res.json({ ok: true, workspace: WORKSPACE }); broadcastTree();
+  } catch (e) { res.status(500).json({ error: String(e.message) }); }
+});
+// 新建项目：parent/name 建目录；template = empty | copy（复制已有算例 from）；可选 git init 与 README
+app.post('/api/projects/create', async (req, res) => {
+  try {
+    const { parent, name, template, from, git, readme } = req.body || {};
+    if (typeof name !== 'string' || !/^[\w.\-\u4e00-\u9fa5 ]{1,80}$/.test(name)) return res.status(400).json({ error: '项目名只能含字母、数字、中文、._- 和空格' });
+    const dir = path.resolve(String(parent || os.homedir()), name.trim());
+    if (fssync.existsSync(dir)) return res.status(409).json({ error: '目录已存在：' + dir });
+    if (template === 'copy') {
+      const src = path.resolve(String(from || ''));
+      if (!from || !(await fs.stat(src)).isDirectory()) return res.status(400).json({ error: '复制来源不是目录' });
+      // 复制算例：跳过分区结果、后处理、编译缓存和 git 历史
+      const SKIP = /^(processor\d+|postProcessing|dynamicCode|\.git)$/;
+      await fs.cp(src, dir, { recursive: true, filter: s => !path.relative(src, s).split(/[\\/]/).some(seg => SKIP.test(seg)) });
+    } else await fs.mkdir(dir, { recursive: true });
+    if (readme) await fs.writeFile(path.join(dir, 'README.md'), `# ${name.trim()}\n\n${String(readme).slice(0, 4000)}\n`, 'utf8');
+    if (git) await new Promise(r => { const p = spawn('git', ['init', '-q'], { cwd: dir }); p.on('close', r); p.on('error', r); });
+    WORKSPACE = dir; SETTINGS.workspace = dir; await _projTouch(dir);
+    res.json({ ok: true, workspace: dir }); broadcastTree();
+  } catch (e) { res.status(500).json({ error: String(e.message) }); }
+});
+app.post('/api/projects/forget', async (req, res) => {
+  const p = path.resolve(String(req.body?.dir || ''));
+  SETTINGS.projects = _projList().filter(x => path.resolve(x.path) !== p); await saveSettings(); res.json({ ok: true });
+});
+// ===== 文件操作增强：重命名/移动/复制、拖入上传到指定目录、下载、全文搜索、git 状态 =====
+app.post('/api/fs/rename', async (req, res) => {
+  try {
+    const { from, to, copy } = req.body || {};
+    const a = safePath(from), b = safePath(to);
+    if (a === WORKSPACE) return res.status(400).json({ error: '不能移动工作区根目录' });
+    if (fssync.existsSync(b)) return res.status(409).json({ error: '目标已存在：' + to });
+    await fs.mkdir(path.dirname(b), { recursive: true });
+    if (copy) await fs.cp(a, b, { recursive: true }); else await fs.rename(a, b);
+    broadcastTree(); res.json({ ok: true, path: path.relative(WORKSPACE, b).replaceAll('\\', '/') });
+  } catch (e) { res.status(500).json({ error: String(e.message) }); }
+});
+// 原始字节上传：拖入文件树 / 对话框都走这里，不再 base64 膨胀。?dir=相对目录&name=文件名&overwrite=1
+app.post('/api/upload-raw', express.raw({ type: () => true, limit: '512mb' }), async (req, res) => {
+  try {
+    const name = String(req.query.name || '').split(/[\\/]/).pop().replace(/[^\w.\-\u4e00-\u9fa5 ()]+/g, '_').slice(-200);
+    if (!name || name === '.' || name === '..') return res.status(400).json({ error: '文件名无效' });
+    const sub = String(req.query.dir || '.cache/uploads/' + Date.now().toString(36));
+    // 拖入文件夹时浏览器给相对路径 a/b/c.txt：只允许普通段
+    const relSub = String(req.query.rel || '').split(/[\\/]/).filter(s => s && s !== '.' && s !== '..').slice(0, -1).join('/');
+    const abs = safePath(path.join(sub, relSub, name));
+    if (fssync.existsSync(abs) && req.query.overwrite !== '1') return res.status(409).json({ error: '已存在', path: path.relative(WORKSPACE, abs).replaceAll('\\', '/') });
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, req.body || Buffer.alloc(0));
+    broadcastTree(); res.json({ ok: true, path: path.relative(WORKSPACE, abs).replaceAll('\\', '/'), size: (req.body || []).length });
+  } catch (e) { res.status(500).json({ error: String(e.message) }); }
+});
+app.get('/api/download', async (req, res) => {
+  try {
+    const f = safePath(req.query.path); const st = await fs.stat(f);
+    if (st.isDirectory()) {
+      // 目录打包为 tar.gz（流式，不落盘）
+      res.setHeader('Content-Type', 'application/gzip');
+      res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(path.basename(f) + '.tar.gz')}`);
+      const p = spawn('tar', ['-czf', '-', '--exclude=processor*', '-C', path.dirname(f), path.basename(f)]);
+      p.stdout.pipe(res); p.on('error', () => res.end()); req.on('close', () => p.kill());
+      return;
+    }
+    res.download(f, path.basename(f));
+  } catch (e) { res.status(500).json({ error: String(e.message) }); }
+});
+// 全文搜索：优先 ripgrep，退回 grep；结果限量，路径相对工作区
+app.get('/api/search', async (req, res) => {
+  const q = String(req.query.q || ''); if (q.length < 2) return res.json({ hits: [] });
+  const glob = String(req.query.glob || '');
+  const run = (cmd, args) => new Promise(resolve => {
+    let out = ''; let p; try { p = spawn(cmd, args, { cwd: WORKSPACE }); } catch { return resolve(null); }
+    const timer = setTimeout(() => p.kill(), 8000);
+    p.stdout.on('data', d => { out += d; if (out.length > 400000) p.kill(); });
+    p.on('error', () => { clearTimeout(timer); resolve(null); });
+    p.on('close', () => { clearTimeout(timer); resolve(out); });
+  });
+  const ex = ['processor*', 'node_modules', '.git', 'dynamicCode', '.cache'];
+  let out = await run('rg', ['--line-number', '--no-heading', '--fixed-strings', '--max-count', '5', '--max-filesize', '2M', '-i',
+    ...ex.flatMap(e => ['-g', '!' + e]), ...(glob ? ['-g', glob] : []), '--', q, '.']);
+  if (out === null) out = await run('grep', ['-rniIF', '-m', '5', ...ex.map(e => '--exclude-dir=' + e), ...(glob ? ['--include=' + glob] : []), '--', q, '.']);
+  if (out === null) {
+    // 无 rg/grep（Windows）：用 Node 逐文件扫，限 2MB/文件、5 处/文件
+    const ql = q.toLowerCase(), globRe = glob ? new RegExp('^' + glob.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$', 'i') : null;
+    const lines = [];
+    for (const rel of await flatList()) {
+      if (lines.length >= 300) break;
+      if (rel.split('/').some(s => /^processor\d+$|^dynamicCode$/.test(s))) continue;
+      if (globRe && !globRe.test(rel.split('/').pop())) continue;
+      const abs = path.join(WORKSPACE, rel);
+      try {
+        if ((await fs.stat(abs)).size > 2 << 20) continue;
+        const buf = await fs.readFile(abs); if (buf.subarray(0, 4096).includes(0)) continue;
+        let n = 0; buf.toString('utf8').split(/\r?\n/).forEach((l, i) => { if (n < 5 && l.toLowerCase().includes(ql)) { n++; lines.push(`${rel}:${i + 1}:${l}`); } });
+      } catch {}
+    }
+    out = lines.join('\n');
+  }
+  const hits = [];
+  for (const line of String(out || '').split('\n')) {
+    const m = /^(?:\.\/)?(.+?):(\d+):(.*)$/.exec(line); if (!m) continue;
+    hits.push({ path: m[1].replaceAll('\\', '/'), line: +m[2], text: m[3].slice(0, 240) });
+    if (hits.length >= 300) break;
+  }
+  res.json({ hits });
+});
+// git 状态：分支 + 每个改动文件的状态码（文件树着色、改动面板用）
+app.get('/api/git/status', async (req, res) => {
+  const r = spawnSync('git', ['status', '--porcelain=v1', '-b', '-uall'], { cwd: WORKSPACE, encoding: 'utf8', timeout: 8000, maxBuffer: 8 << 20 });
+  if (r.status !== 0) return res.json({ git: false });
+  const lines = r.stdout.split('\n').filter(Boolean); const head = lines.shift() || '';
+  const files = lines.slice(0, 2000).map(l => ({ code: l.slice(0, 2), path: l.slice(3).replace(/^.* -> /, '').replace(/^"|"$/g, '') }));
+  res.json({ git: true, branch: head.replace(/^## /, ''), files });
+});
+// 会话导出为 Markdown（对话、工具调用与结果摘要）
+app.get('/api/tasks/:id/export', (req, res) => {
+  const t = TASKS.get(req.params.id); if (!t) return res.status(404).json({ error: '任务不存在' });
+  const ev = taskHistoryPayload(t).events, out = [`# ${t.title || '任务'}`, '', `导出时间：${new Date().toISOString()}　工作区：${WORKSPACE}`, ''];
+  for (const e of ev) {
+    if (e.k === 'user') out.push('## 用户', '', e.text, '');
+    else if (e.k === 'ai') out.push('## 智能体', '', e.text, '');
+    else if (e.k === 'tool') out.push(`<details><summary>工具 ${e.name}</summary>`, '', '```json', e.args || '', '```', '', '```', e.result || '', '```', '</details>', '');
+    else if (e.k === 'sys') out.push(`> ${e.text}`, '');
+  }
+  res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent((t.title || 'task').replace(/[\\/:*?"<>|]+/g, '_') + '.md')}`);
+  res.send(out.join('\n'));
+});
+// v0.9 API 启动任务：创建任务 + headless agent，网页切换到该任务即可看到完整上下文
+app.post('/api/task/run', async (req, res) => {
+  try {
+    const { text, title, autoMode = true, agentMode = 'build', attachments = [] } = req.body || {};
+    if (!text || typeof text !== 'string') return res.status(400).json({ error: 'text 必填' });
+    const t = createTask((title || text.slice(0, 28)).slice(0, 60));
+    t.autoMode = autoMode === true || autoMode === 'true';
+    t.agentMode = agentMode === 'plan' ? 'plan' : 'build';
+    persistTaskNow(t);
+    const { ws, s } = _makeHeadlessSession(t);
+    broadcastTaskState();
+    const prompt = text.slice(0, 8000);
+    setTimeout(() => runAgent(ws, prompt, attachments || []).catch(e => console.warn('[api/task/run] 失败:', e.message)), 500);
+    res.json({ ok: true, taskId: t.id, title: t.title });
+  } catch (e) { res.status(500).json({ error: String(e.message) }); }
+});
+app.get('/api/git/diff', async (req, res) => {
+  try {
+    const rel = path.relative(WORKSPACE, safePath(req.query.path)).replaceAll('\\', '/');
+    const r = spawnSync('git', ['diff', 'HEAD', '--', rel], { cwd: WORKSPACE, encoding: 'utf8', timeout: 8000, maxBuffer: 8 << 20 });
+    const head = spawnSync('git', ['show', 'HEAD:' + rel], { cwd: WORKSPACE, encoding: 'utf8', timeout: 8000, maxBuffer: 8 << 20 });
+    res.json({ diff: r.stdout || '', original: head.status === 0 ? head.stdout : '' });
+  } catch (e) { res.status(500).json({ error: String(e.message) }); }
+});
 app.post('/api/sim/launch', async (req, res) => {
   try { const r = await launchParaView(req.body?.casePath); res.json({ ok: true, ...r }); }
   catch (e) { res.status(500).json({ error: String(e.message) }); }
 });
 app.post('/api/sim/close', (req, res) => { killParaView(); res.json({ ok: true }); });
-
-// ====================== Notebook Kernel 管理（逐 cell 执行） ======================
-const NB_KERNELS = new Map(); // path -> { proc, subscribers:Set<ws>, ready, buffer }
-function nbKernelStart(nbPath) {
-  if (NB_KERNELS.has(nbPath)) return NB_KERNELS.get(nbPath);
-  const py = SETTINGS.pythonPath || (IS_WIN ? 'python' : 'python3');
-  const host = path.join(__dirname, 'nb_kernel_host.py');
-  const proc = spawn(py, ['-u', host], { cwd: WORKSPACE, env: { ...process.env, PYTHONIOENCODING: 'utf-8' } });
-  const k = { proc, subscribers: new Set(), ready: false, buffer: '' };
-  NB_KERNELS.set(nbPath, k);
-  proc.stdout.setEncoding('utf8');
-  proc.stdout.on('data', (d) => {
-    k.buffer += d;
-    let idx; while ((idx = k.buffer.indexOf('\n')) >= 0) {
-      const line = k.buffer.slice(0, idx); k.buffer = k.buffer.slice(idx + 1);
-      if (!line.trim()) continue;
-      try {
-        const msg = JSON.parse(line);
-        if (msg.type === 'ready') k.ready = true;
-        if (msg.type === 'fatal') k.fatal = msg.message;
-        for (const ws of k.subscribers) if (ws.readyState === 1)
-          ws.send(JSON.stringify({ type: 'nb_msg', path: nbPath, msg }));
-      } catch {}
-    }
-  });
-  proc.stderr.on('data', (d) => {
-    const text = d.toString();
-    for (const ws of k.subscribers) if (ws.readyState === 1)
-      ws.send(JSON.stringify({ type: 'nb_msg', path: nbPath, msg: { type: 'stream', name: 'stderr', text, cell_id: '' } }));
-  });
-  proc.on('exit', (code) => {
-    for (const ws of k.subscribers) if (ws.readyState === 1)
-      ws.send(JSON.stringify({ type: 'nb_msg', path: nbPath, msg: { type: 'fatal', message: `kernel 退出 (code=${code})` } }));
-    NB_KERNELS.delete(nbPath);
-  });
-  proc.on('error', (e) => {
-    for (const ws of k.subscribers) if (ws.readyState === 1)
-      ws.send(JSON.stringify({ type: 'nb_msg', path: nbPath, msg: { type: 'fatal', message: '启动失败：' + e.message } }));
-    NB_KERNELS.delete(nbPath);
-  });
-  return k;
-}
-function nbKernelSend(nbPath, obj) {
-  const k = NB_KERNELS.get(nbPath); if (!k) return false;
-  try { k.proc.stdin.write(JSON.stringify(obj) + '\n'); return true; } catch { return false; }
-}
-function nbKernelStop(nbPath) {
-  const k = NB_KERNELS.get(nbPath); if (!k) return;
-  try { k.proc.stdin.write(JSON.stringify({ action: 'shutdown' }) + '\n'); } catch {}
-  setTimeout(() => { try { if (!k.proc.killed) k.proc.kill(); } catch {} }, 800);
-}
-
-// 保存 notebook（全量覆写）
-app.post('/api/notebook/save', async (req, res) => {
-  try { const { path: rel, json: nb } = req.body || {};
-    const f = safePath(rel);
-    await fs.writeFile(f, JSON.stringify(nb, null, 1), 'utf8');
-    res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// ====================== Notebook 一键走全本 ======================
-app.post('/api/notebook/execute', async (req, res) => {
-  const { path: rel } = req.body || {};
-  if (!rel) return res.status(400).json({ error: '缺少 path' });
-  let abs; try { abs = safePath(rel); } catch (e) { return res.status(400).json({ error: e.message }); }
-  const py = SETTINGS.pythonPath || (IS_WIN ? 'python' : 'python3');
-  const cmd = `"${py}" -m jupyter nbconvert --to notebook --execute --inplace "${abs}" --ExecutePreprocessor.timeout=600`;
-  res.json({ started: true });
-  // 后端广播到所有 ws
-  for (const ws of allClients) ws.send(JSON.stringify({ type: 'term', line: `[Notebook] 执行中：${rel}` }));
-  const child = spawn(IS_WIN ? (process.env.COMSPEC || 'cmd.exe') : 'bash', IS_WIN ? ['/c', cmd] : ['-c', cmd], { cwd: WORKSPACE });
-  const broadcast = (line) => { for (const ws of allClients) ws.send(JSON.stringify({ type: 'term', line })); };
-  broadcast(`$ ${cmd}`);
-  const onData = d => d.toString().split(/\r?\n/).forEach(l => l && broadcast(l));
-  child.stdout.on('data', onData); child.stderr.on('data', onData);
-  child.on('close', (code) => { broadcast(`[Notebook 退出码 ${code}]`); for (const ws of allClients) ws.send(JSON.stringify({ type: 'notebook_done', path: rel, code })); });
-});
 
 // ====================== 联网工具 ======================
 function stripHtml(s) {
@@ -7041,6 +9566,59 @@ async function readPaper(p, focus, progress) {
 // ====================== paper_extract：grounded 结构化抽取 ======================
 // 只抽原文里「真实出现」的内容：带编号方程 / 表格 / 带单位数值参数；不臆造。
 // 方程/复杂版面建议配合 render_pages + vision_analyze 做逐字精转写。
+// 论文嵌入图按原始分辨率抽出（整页渲染会把小插图糊掉：DMTO 分布器插图原图只有 113×165 像素）
+async function paperFigures(args) {
+  const pdf = safePath(String(args.path || ''));
+  const outDir = path.join(WORKSPACE, '.nullflux', 'figs', path.basename(pdf).replace(/\.pdf$/i, '').replace(/[^\w.-]+/g, '_'));
+  await fs.mkdir(outDir, { recursive: true });
+  const py = SETTINGS.pythonPath || (IS_WIN ? 'python' : 'python3');
+  const code = `
+import fitz, json, re, sys, os
+doc = fitz.open(sys.argv[1]); out = sys.argv[2]; res = []
+for pno in range(len(doc)):
+    page = doc[pno]; caps = [m.group(0)[:220] for m in re.finditer(r'(Fig\\.?|Figure|图)\\s*\\d+[.:．][^\\n]*', page.get_text())]
+    for k, img in enumerate(page.get_images(full=True)):
+        try: d = doc.extract_image(img[0])
+        except Exception: continue
+        if d['width'] * d['height'] < 40000: continue
+        f = os.path.join(out, f'p{pno+1}_{k}.{d["ext"]}'); open(f, 'wb').write(d['image'])
+        res.append(dict(file=f, page=pno + 1, width=d['width'], height=d['height'], captions=caps[:4]))
+print(json.dumps(res))`;
+  const r = await _spawnP(py, ['-c', code, pdf, outDir]);
+  if (r.code !== 0) throw new Error('抽图失败（需要 PyMuPDF）：' + (r.err || r.out).trim().split('\n').pop());
+  const list = JSON.parse(r.out.trim().split('\n').pop() || '[]');
+  const rel = f => path.relative(WORKSPACE, f).replace(/\\/g, '/');
+  return `[paper_figures] ${list.length} 张嵌入图（原始分辨率）已存到 ${rel(outDir)}\n` + list.map(x => `- ${rel(x.file)}  第 ${x.page} 页  ${x.width}×${x.height}px${x.captions.length ? '  图注：' + x.captions.join(' | ') : ''}`).join('\n')
+    + '\n下一步：对几何图用 image_crop 放大部件（分布器、喷嘴、内构件）后 vision_analyze；按图上标注尺寸换比例尺。';
+}
+// 裁剪 + 放大（LANCZOS）+ 像素测距；ref 给已知尺寸的两点和真实长度 → 换算 mm/px
+async function imageCrop(args) {
+  const src = safePath(String(args.path || ''));
+  const box = Array.isArray(args.box) && args.box.length === 4 ? args.box.map(Number) : null;
+  const scale = Math.min(Math.max(+args.scale || 4, 1), 12);
+  const out = path.join(path.dirname(src), path.basename(src).replace(/\.\w+$/, '') + `_crop_${box ? box.join('-') : 'full'}_x${scale}.png`);
+  const py = SETTINGS.pythonPath || (IS_WIN ? 'python' : 'python3');
+  const code = `
+import json, sys, math
+from PIL import Image
+a = json.loads(sys.argv[1]); im = Image.open(a['src']).convert('RGB'); W, H = im.size
+b = a['box'] or [0, 0, W, H]; c = im.crop(tuple(int(v) for v in b)); c = c.resize((max(1, c.width * a['scale']), max(1, c.height * a['scale'])), Image.LANCZOS); c.save(a['out'])
+res = dict(src_size=[W, H], box=b, out_size=list(c.size))
+ref = a.get('ref')
+mmpx = (ref['mm'] / math.dist(ref['p1'], ref['p2'])) if ref else None
+if mmpx: res['mm_per_px'] = mmpx
+res['measure'] = [dict(p1=m[0], p2=m[1], px=math.dist(m[0], m[1]), mm=(math.dist(m[0], m[1]) * mmpx if mmpx else None)) for m in (a.get('measure') or [])]
+print(json.dumps(res))`;
+  const r = await _spawnP(py, ['-c', code, JSON.stringify({ src, out, box, scale, ref: args.ref || null, measure: args.measure || [] })]);
+  if (r.code !== 0) throw new Error('裁剪失败：' + (r.err || r.out).trim().split('\n').pop());
+  const j = JSON.parse(r.out.trim().split('\n').pop());
+  const rel = path.relative(WORKSPACE, out).replace(/\\/g, '/');
+  return `[image_crop] ${rel}（原图 ${j.src_size.join('×')}，裁 ${JSON.stringify(j.box)}，放大 ${scale}×）`
+    + (j.mm_per_px ? `\n比例尺 ${j.mm_per_px.toFixed(3)} mm/px（坐标均为原图像素）` : '')
+    + j.measure.map(m => `\n${JSON.stringify(m.p1)}→${JSON.stringify(m.p2)}：${m.px.toFixed(1)} px${m.mm !== null ? ` ≈ ${m.mm.toFixed(1)} mm（±${(j.mm_per_px * 1.5).toFixed(1)} mm，按 ±1.5 px）` : ''}`).join('')
+    + `\n用 vision_analyze(images=["${rel}"]) 细看。`;
+}
+
 async function paperExtract(p, focus, renderPages, progress) {
   const log = typeof progress === 'function' ? progress : () => {};
   log(`paper_extract：解析 ${p}${renderPages ? '（含整页渲染）' : ''}…`);
@@ -7140,6 +9718,7 @@ async function _imageToDataUrl(p) {
   return 'data:' + mime + ';base64,' + buf.toString('base64');
 }
 async function visionAnalyze(images, question, maxTokens, progress) {
+  const VISION_TIMEOUT_MS = parseInt(process.env.VISION_TIMEOUT_MS || '120000', 10);
   const log = typeof progress === 'function' ? progress : () => {};
   if (!images || !images.length) return 'vision_analyze 需要至少 1 张图片路径';
   if (!question) return 'vision_analyze 需要 question 参数';
@@ -7160,20 +9739,10 @@ async function visionAnalyze(images, question, maxTokens, progress) {
     { role: 'user', content: userContent },
   ];
   try {
-    // V4.1 专用视觉路由：若配了 visionModel，不论主模型是 Copilot/DeepSeek 还是别的都主动走这个端点，
-    // 避免主模型 "not a VLM" 400。结果以文字回传给主模型。
-    const useDedicated = !!(SETTINGS.visionModel && SETTINGS.visionBaseUrl);
+    const config = resolveChatConfig(SETTINGS, { vision: true });
+    const useDedicated = config.dedicated;
     let resp, j;
-    if (useDedicated) {
-      const vkey = (SETTINGS.visionApiKey && SETTINGS.visionApiKey.trim()) || SETTINGS.apiKey;
-      if (!vkey) return 'vision_analyze 失败：未配置 visionApiKey 且主 apiKey 为空';
-      log(`→ VLM 端点: ${SETTINGS.visionBaseUrl}  模型: ${SETTINGS.visionModel}`);
-      resp = await fetch(`${SETTINGS.visionBaseUrl.replace(/\/$/,'')}/v1/chat/completions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + vkey },
-        body: JSON.stringify({ model: SETTINGS.visionModel, messages, temperature: 0.0, max_tokens: maxTokens, stream: false }),
-      });
-    } else if (SETTINGS.provider === 'copilot') {
+    if (config.provider === 'copilot') {
       const tok = await copilotRefreshApiToken();
       resp = await fetch('https://api.githubcopilot.com/chat/completions', {
         method: 'POST',
@@ -7181,13 +9750,15 @@ async function visionAnalyze(images, question, maxTokens, progress) {
         body: JSON.stringify({ model: SETTINGS.copilotModel || SETTINGS.model || 'gpt-4.1', messages, temperature: 0.0, max_tokens: maxTokens, stream: false }),
       });
     } else {
-      resp = await fetch(`${SETTINGS.baseUrl.replace(/\/$/,'')}/v1/chat/completions`, {
+      // 非流式整包返回：上游卡住时没有 IDLE 看门狗兜底，必须有总超时，否则整个智能体停在这一步
+      resp = await fetch(config.url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + SETTINGS.apiKey },
-        body: JSON.stringify({ model: SETTINGS.model, messages, temperature: 0.0, max_tokens: maxTokens, stream: false }),
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + (config.apiKey || 'local') },
+        body: JSON.stringify({ model: config.model, messages, temperature: 0.0, max_tokens: maxTokens, stream: false }),
+        signal: AbortSignal.timeout(VISION_TIMEOUT_MS),
       });
     }
-    if (!resp.ok) return 'vision_analyze HTTP ' + resp.status + ' (model=' + (useDedicated ? SETTINGS.visionModel : (SETTINGS.provider === 'copilot' ? (SETTINGS.copilotModel || SETTINGS.model) : SETTINGS.model)) + '): ' + (await resp.text().catch(() => '')).slice(0, 500) + '\n提示：如果提示 not a VLM，请在 ⚙ 设置里调整 visionModel（推荐 SiliconFlow: Pro/moonshotai/Kimi-K2.6 / Qwen/Qwen2.5-VL-72B-Instruct / deepseek-ai/deepseek-vl2）';
+    if (!resp.ok) return 'vision_analyze HTTP ' + resp.status + ' (model=' + (config.model || SETTINGS.copilotModel || SETTINGS.model) + '): ' + (await resp.text().catch(() => '')).slice(0, 500) + '\n提示：所选接口和模型必须支持 OpenAI 兼容的 image_url 视觉输入；可在模型设置中配置独立 VLM。';
     j = await resp.json();
     const ans = j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content || '（模型未返回内容）';
     const tag = useDedicated ? ` · ${SETTINGS.visionModel}` : '';
@@ -7619,6 +10190,272 @@ app.post('/api/stl/render', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ============ 轻量流场后处理（/post 页面；numpy+matplotlib，不依赖 ParaView/X，只读算例）============
+const POST_PY = path.join(__dirname, 'post_field.py');
+function _postCase(p) {
+  if (!p) throw new Error('case 必填');
+  const abs = path.isAbsolute(p) ? path.resolve(p) : safePath(p);
+  const rel = path.relative(WORKSPACE, abs);
+  if (rel.startsWith('..') || path.isAbsolute(rel)) throw new Error('算例必须在工作区内');
+  return abs;
+}
+function _runPost(args, timeoutMs = 180_000) {
+  return new Promise((resolve, reject) => {
+    const py = SETTINGS.pythonPath || (IS_WIN ? 'python' : 'python3');
+    const p = spawn(py, [POST_PY, ...args], { cwd: WORKSPACE, windowsHide: true, env: { ...process.env, MPLBACKEND: 'Agg' } });
+    let out = '', err = '';
+    p.stdout.on('data', d => out += d); p.stderr.on('data', d => err += d);
+    const t = setTimeout(() => { try { p.kill(); } catch {} reject(new Error('后处理超时')); }, timeoutMs);
+    p.on('error', e => { clearTimeout(t); reject(new Error('Python 启动失败：' + e.message)); });
+    p.on('close', () => {
+      clearTimeout(t);
+      const last = out.trim().split(/\r?\n/).pop() || '';
+      let j; try { j = JSON.parse(last); } catch { return reject(new Error((err || out).trim().split(/\r?\n/).slice(-3).join(' ') || '后处理无输出')); }
+      if (j.error) return reject(new Error(j.error));
+      resolve(j);
+    });
+  });
+}
+let _postQueue = Promise.resolve();
+const _postSerial = fn => (_postQueue = _postQueue.then(fn, fn));
+app.get('/api/post/cases', async (req, res) => {
+  const found = [];
+  async function walk(dir, depth) {
+    if (depth > 3 || found.length >= 200) return;
+    let ents = []; try { ents = await fs.readdir(dir, { withFileTypes: true }); } catch { return; }
+    if (ents.some(e => e.isDirectory() && e.name === 'system') && ents.some(e => e.isDirectory() && (e.name === 'constant' || e.name.startsWith('processor')))) {
+      let mtime = 0; try { mtime = (await fs.stat(dir)).mtimeMs; } catch {}
+      const hasData = ents.some(e => e.isDirectory() && /^\d/.test(e.name) && !/^0(\.orig)?$/.test(e.name)) || ents.some(e => e.isDirectory() && /^processor\d+$/.test(e.name));
+      const hasMesh = fssync.existsSync(path.join(dir, 'constant', 'polyMesh', 'owner')) || fssync.existsSync(path.join(dir, 'constant', 'polyMesh', 'owner.gz'))
+        || fssync.existsSync(path.join(dir, 'processor0', 'constant', 'polyMesh', 'owner')) || fssync.existsSync(path.join(dir, 'processor0', 'constant', 'polyMesh', 'owner.gz'));
+      let hasStl = false; try { hasStl = (await fs.readdir(path.join(dir, 'constant', 'triSurface'))).some(f => /\.stl$/i.test(f)); } catch {}
+      found.push({ path: path.relative(WORKSPACE, dir) || '.', mtime, hasData, hasMesh, hasStl });
+      return;
+    }
+    // 失败试验的存档、备份目录不当成可看的算例（之前下拉框默认选中了 trials_failed 里的坏算例）
+    for (const e of ents) if (e.isDirectory() && !e.name.startsWith('.') && !IGNORE.has(e.name) && !/^processor\d+$/.test(e.name) && !/^\d/.test(e.name)
+      && !/^(trials_failed|backup.*|.*\.bak.*|node_modules)$/.test(e.name)) await walk(path.join(dir, e.name), depth + 1);
+  }
+  await walk(WORKSPACE, 0);
+  found.sort((a, b) => b.mtime - a.mtime);
+  res.json({ workspace: WORKSPACE, cases: found });
+});
+app.get('/api/post/info', async (req, res) => {
+  try {
+    const c = _postCase(req.query.case);
+    const args = ['info', c]; if (req.query.time) args.push(String(req.query.time));
+    res.json(await _postSerial(() => _runPost(args, 600_000)));
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.post('/api/post/slice', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const c = _postCase(b.case);
+    const num = v => (v === '' || v === null || v === undefined || !Number.isFinite(Number(v))) ? undefined : Number(v);
+    const a = { time: String(b.time || ''), field: String(b.field || '').replace(/[^\w.:-]/g, ''), axis: ['x', 'y', 'z'].includes(b.axis) ? b.axis : 'y',
+      pos: num(b.pos), component: ['mag', 'x', 'y', 'z'].includes(b.component) ? b.component : 'mag', vmin: num(b.vmin), vmax: num(b.vmax),
+      cmap: ['viridis', 'cividis', 'inferno', 'magma', 'plasma', 'RdBu_r', 'coolwarm', 'turbo', 'jet', 'gray'].includes(b.cmap) ? b.cmap : 'viridis',
+      shading: b.shading === 'smooth' ? 'smooth' : 'flat', mesh: !!b.mesh, wide: !!b.wide, title: b.title !== false,
+      contours: Math.min(Math.max(Math.round(num(b.contours) || 0), 0), 20),
+      dpi: Math.min(Math.max(Math.round(num(b.dpi) || 200), 72), 400) };
+    if (b.crop && typeof b.crop === 'object') a.crop = Object.fromEntries(['x0', 'x1', 'y0', 'y1'].filter(k => num(b.crop[k]) !== undefined).map(k => [k, num(b.crop[k])]));
+    if (!a.time || !a.field) throw new Error('time 和 field 必填');
+    a.out = path.join(os.tmpdir(), `cfdpost_${crypto.randomBytes(8).toString('hex')}.png`);
+    const r = await _postSerial(() => _runPost(['slice', c, JSON.stringify(a)]));
+    const buf = await fs.readFile(a.out); fs.unlink(a.out).catch(() => {});
+    delete r.png;
+    res.json({ ...r, image: 'data:image/png;base64,' + buf.toString('base64') });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.get(['/post', '/post.html'], (req, res) => res.sendFile(path.join(__dirname, 'public', 'post.html')));
+// ============ 三维后处理 / 前处理查看（post_vtk.py 常驻进程，VTK；读过的算例与时刻有缓存）============
+const POST_VTK = path.join(__dirname, 'post_vtk.py');
+let _pv3 = null;
+function _pv3Worker() {
+  if (_pv3 && !_pv3.dead) return _pv3;
+  const py = SETTINGS.pythonPath || (IS_WIN ? 'python' : 'python3');
+  const p = spawn(py, [POST_VTK], { cwd: WORKSPACE, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  const w = { p, pending: new Map(), buf: '', seq: 0, dead: false, err: '' };
+  p.stdout.setEncoding('utf8');
+  p.stdout.on('data', d => {
+    w.buf += d; let i;
+    while ((i = w.buf.indexOf('\n')) >= 0) {
+      const line = w.buf.slice(0, i); w.buf = w.buf.slice(i + 1);
+      let j; try { j = JSON.parse(line); } catch { continue; }
+      const cb = w.pending.get(j.id); if (cb) { w.pending.delete(j.id); cb(j); }
+    }
+  });
+  p.stderr.on('data', d => { w.err = (w.err + d).slice(-2000); });
+  const fail = msg => { w.dead = true; for (const cb of w.pending.values()) cb({ ok: false, error: msg }); w.pending.clear(); };
+  p.on('error', e => fail('后处理进程启动失败：' + e.message));
+  p.on('close', code => fail(`后处理进程退出（${code}）${w.err ? '：' + w.err.trim().split('\n').pop() : ''}`));
+  _pv3 = w; return w;
+}
+function pv3(cmd, args, timeoutMs = 600_000) {
+  return new Promise((resolve, reject) => {
+    const w = _pv3Worker(); const id = ++w.seq;
+    const t = setTimeout(() => { w.pending.delete(id); try { w.p.kill(); } catch {} reject(new Error('后处理超时（大网格首次读取可能较慢，已重启后处理进程）')); }, timeoutMs);
+    w.pending.set(id, j => { clearTimeout(t); j.ok ? resolve(j.result) : reject(new Error(j.error || '后处理失败')); });
+    w.p.stdin.write(JSON.stringify({ id, cmd, args }) + '\n');
+  });
+}
+const _num3 = v => Array.isArray(v) && v.length === 3 && v.every(x => Number.isFinite(Number(x))) ? v.map(Number) : undefined;
+// 智能体出图：把"z=0.5 m 截面的乙烯云图"这类要求变成可视化页的图层，算一遍拿统计，并推给界面打开
+async function postViewTool(a, ws, session) {
+  const c = _postCase(String(a.case || ''));
+  const rel = path.relative(WORKSPACE, c).replace(/\\/g, '/') || '.';
+  const info = await pv3('info', { case: c });
+  const b = info.bounds, AX = { x: 0, y: 1, z: 2 }, up = info.up || 'y';
+  const center = [(b[0] + b[1]) / 2, (b[2] + b[3]) / 2, (b[4] + b[5]) / 2];
+  const time = a.time && a.time !== 'latest' ? Number(a.time) : info.latest;
+  const names = info.fields.map(f => f.name);
+  const fieldLine = info.fields.filter(f => !/^(alphat|nut|Ydefault)/.test(f.name)).map(f => `${f.name}${f.ncomp === 3 ? '（矢量）' : ''} ${(+f.range[0]).toPrecision(3)}–${(+f.range[1]).toPrecision(3)}`).join('；');
+  const head = `[post_view] ${rel} · ${info.cells.toLocaleString()} 单元 · ${info.times.length} 个时刻（最新 ${info.latest}）· 竖直轴 ${up}${info.axisym ? ' · 2D 轴对称（wedge）' : ''}\n范围 x ${b[0].toPrecision(3)}–${b[1].toPrecision(3)}，y ${b[2].toPrecision(3)}–${b[3].toPrecision(3)}，z ${b[4].toPrecision(3)}–${b[5].toPrecision(3)} m`;
+  if (!Array.isArray(a.layers) || !a.layers.length) return `${head}\n场：${fieldLine}\n边界：${info.patches.map(p => `${p.name}(${p.type})`).join('、')}\n→ 再调用 post_view 并给 layers。`;
+  const near = f => names.filter(n => n.toLowerCase().includes(String(f).toLowerCase().split('.')[0])).slice(0, 5).join('、') || names.slice(0, 8).join('、');
+  const srv = [], cli = [], problems = [];
+  const horiz = info.axisym ? 'z' : (up === 'z' ? 'y' : 'z');
+  for (const [i, L] of a.layers.slice(0, 8).entries()) {
+    const type = String(L.type || 'slice');
+    const field = L.field ? String(L.field) : '';
+    if (field && !names.includes(field)) { problems.push(`第 ${i + 1} 层：没有场 ${field}，相近的有 ${near(field)}`); continue; }
+    const s = { id: 'a' + i, type, field: field || null, comp: L.comp || 'mag' };
+    const k = { type, field, comp: s.comp, cmap: L.cmap || 'turbo', opacity: L.opacity ?? 1, log: !!L.log, contours: +L.contours || 0 };
+    if (Number.isFinite(+L.lo) && Number.isFinite(+L.hi) && type !== 'threshold') Object.assign(k, { auto: false, lo: +L.lo, hi: +L.hi });
+    if (['slice', 'clip', 'glyph'].includes(type)) {
+      const axis = ['x', 'y', 'z'].includes(L.axis) ? L.axis : (type === 'slice' && L.position !== undefined && !L.axis ? up : horiz);
+      const ai = AX[axis], o = [...center];
+      o[ai] = Number.isFinite(+L.position) ? +L.position : (info.axisym && axis === 'z' ? 0 : center[ai]);
+      if (o[ai] < b[ai * 2] || o[ai] > b[ai * 2 + 1]) { problems.push(`第 ${i + 1} 层：${axis}=${o[ai]} 在计算域外（${b[ai * 2].toPrecision(3)}–${b[ai * 2 + 1].toPrecision(3)}）`); continue; }
+      const n = [0, 0, 0]; n[ai] = 1;
+      Object.assign(s, { origin: o, normal: n, mirror: !!info.axisym && type !== 'clip' && axis === 'z', contours: k.contours });
+      Object.assign(k, { axis, pos: o[ai], mirror: s.mirror });
+      if (type === 'clip') { s.invert = !!L.invert; k.flip = !!L.invert; }
+    }
+    if (type === 'iso') {
+      const isoField = L.isoField || field; const vals = [].concat(L.values ?? L.value ?? []).map(Number).filter(Number.isFinite);
+      if (!isoField || !vals.length) { problems.push(`第 ${i + 1} 层：等值面要给 field 和 values`); continue; }
+      Object.assign(s, { isoField, values: vals }); Object.assign(k, { isoField, value: vals.join(', ') });
+    }
+    if (type === 'threshold') {
+      const thrField = L.thrField || field;
+      if (!thrField || !Number.isFinite(+L.lo) || !Number.isFinite(+L.hi)) { problems.push(`第 ${i + 1} 层：阈值要给 field、lo、hi`); continue; }
+      Object.assign(s, { thrField, lo: +L.lo, hi: +L.hi }); Object.assign(k, { thrField, tlo: +L.lo, thi: +L.hi });
+    }
+    if (type === 'stream' || type === 'glyph') {
+      const vector = L.vector || (names.includes('U.gas') ? 'U.gas' : names.find(n => /^U/.test(n)));
+      s.vector = vector; k.vector = vector; s.n = k.n = +L.n || (type === 'stream' ? 40 : 1500);
+      if (type === 'stream') {
+        const ui = AX[up], h = b[ui * 2] + 0.05 * (b[ui * 2 + 1] - b[ui * 2]), ax = ui === 0 ? 1 : 0;
+        const p1 = _num3(L.p1) || (() => { const p = [...center]; p[ui] = h; p[ax] = b[ax * 2] + 0.02 * (b[ax * 2 + 1] - b[ax * 2]); if (info.axisym) p[2] = 0; return p; })();
+        const p2 = _num3(L.p2) || (() => { const p = [...center]; p[ui] = h; p[ax] = b[ax * 2 + 1] - 0.02 * (b[ax * 2 + 1] - b[ax * 2]); if (info.axisym) p[2] = 0; return p; })();
+        Object.assign(s, { p1, p2, tubes: true, field: field || vector }); Object.assign(k, { p1, p2, field: field || vector });
+      }
+    }
+    if (type === 'volume') { if (!field) { problems.push(`第 ${i + 1} 层：体渲染要给 field`); continue; } }
+    if (type !== 'volume') srv.push(s);
+    cli.push(k);
+  }
+  let res = { layers: [] };
+  if (srv.length) res = await pv3('scene', { case: c, time, layers: srv });
+  const lines = res.layers.map((r, j) => {
+    const s = srv[j], what = `${s.type}${s.normal ? ` 法向 ${'xyz'[s.normal.indexOf(1)]}@${(+s.origin[s.normal.indexOf(1)]).toPrecision(4)} m` : ''}${s.field ? ' · ' + s.field : ''}`;
+    if (r.kind === 'error') return `- ${what}：出错 ${r.error}`;
+    if (r.kind === 'empty') return `- ${what}：没有几何（平面或等值没切到网格）`;
+    const st = r.stats || {};
+    return `- ${what}：${r.range ? `范围 ${(+r.range[0]).toPrecision(4)} – ${(+r.range[1]).toPrecision(4)}` : ''}${st.mean !== undefined ? `，${st.measure === 'Area' ? '面积' : '体积'}加权平均 ${(+st.mean).toPrecision(4)}` : ''}${st.cells !== undefined ? `，${st.cells} 个单元、体积 ${(+st.size).toPrecision(3)} m³` : ''}${st.lines !== undefined ? `，${st.lines} 条流线` : ''}`;
+  });
+  // 截面另出一张静态 PNG（matplotlib，出版口径），智能体可以 vision_analyze 自查
+  let png = '';
+  const sl = srv.find(s => s.type === 'slice' && s.field);
+  if (sl) {
+    try {
+      const ai = sl.normal.indexOf(1);
+      const out = path.join(WORKSPACE, '.nullflux', 'post', `${Date.now()}_${sl.field.replace(/\W+/g, '_')}.png`);
+      await fs.mkdir(path.dirname(out), { recursive: true });
+      const ti = await _postSerial(() => _runPost(['info', c], 600_000)).catch(() => null);
+      const tdirs = (ti && (ti.times || [])).map(String);
+      const tdir = tdirs.length ? tdirs.reduce((best, x) => Math.abs(+x - (res.time ?? time)) < Math.abs(+best - (res.time ?? time)) ? x : best) : String(res.time ?? time);
+      const opt = { time: tdir, field: sl.field, axis: 'xyz'[ai], pos: sl.origin[ai], component: sl.comp || 'mag', cmap: 'turbo', shading: 'flat', dpi: 160, out };
+      await _postSerial(() => _runPost(['slice', c, JSON.stringify(opt)]));
+      png = path.relative(WORKSPACE, out).replace(/\\/g, '/');
+    } catch (e) { png = ''; }
+  }
+  if (a.show !== false && ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'post_view', case: rel, mode: a.mode === 'mesh' ? 'mesh' : 'post', time: res.time ?? time, layers: cli }));
+  return `${head}\n时刻 ${res.time ?? time}\n${lines.join('\n')}${problems.length ? '\n⚠ ' + problems.join('\n⚠ ') : ''}${png ? `\n静态图：${png}（可 vision_analyze）` : ''}${a.show !== false ? '\n已在右侧「可视化」打开，用户可以继续拖动、改色标。' : ''}`;
+}
+// 计算器派生场：名字限字母数字点，表达式在 Python 端按 AST 白名单求值
+const _derived = d => (Array.isArray(d) ? d : []).slice(0, 12).filter(x => x && typeof x.name === 'string' && typeof x.expr === 'string')
+  .map(x => ({ name: x.name.replace(/[^\w.-]/g, '_').slice(0, 40), expr: x.expr.slice(0, 300) }));
+app.post('/api/post3d/stats', async (req, res) => {
+  try { const b = req.body || {}; res.json(await pv3('stats', { case: _postCase(b.case), time: b.time, field: String(b.field || ''), comp: b.comp || 'mag', bins: Math.min(Math.max(+b.bins || 40, 5), 200), derived: _derived(b.derived) })); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.post('/api/post3d/timeseries', async (req, res) => {
+  try {
+    const b = req.body || {}; const point = _num3(b.point); if (!point) throw new Error('point 需要三个数');
+    res.json(await pv3('timeseries', { case: _postCase(b.case), point, fields: (b.fields || []).slice(0, 6), comp: b.comp || 'mag', maxTimes: Math.min(+b.maxTimes || 120, 400), derived: _derived(b.derived) }, 1_800_000));
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.post('/api/post3d/calccheck', async (req, res) => {
+  try { const b = req.body || {}; res.json(await pv3('calccheck', { case: _postCase(b.case), time: b.time, expr: String(b.expr || '').slice(0, 300) })); }
+  catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.get('/api/post3d/info', async (req, res) => {
+  try { res.json(await pv3('info', { case: _postCase(req.query.case) })); } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.post('/api/post3d/scene', async (req, res) => {
+  try {
+    const b = req.body || {}; const c = _postCase(b.case);
+    const TYPES = new Set(['surface', 'patches', 'stl', 'slice', 'clip', 'iso', 'threshold', 'stream', 'glyph', 'outline']);
+    const layers = (Array.isArray(b.layers) ? b.layers : []).slice(0, 16).filter(L => L && TYPES.has(L.type)).map(L => {
+      const o = { ...L };
+      for (const k of ['origin', 'normal', 'p1', 'p2', 'p3']) if (k in o) { o[k] = _num3(o[k]); if (!o[k]) throw new Error(`${L.type}.${k} 需要三个数`); }
+      return o;
+    });
+    res.json(await pv3('scene', { case: c, time: b.time, layers, derived: _derived(b.derived) }));
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.post('/api/post3d/volume', async (req, res) => {
+  try {
+    const b = req.body || {};
+    res.json(await pv3('volume', { case: _postCase(b.case), time: b.time, field: String(b.field || ''), comp: b.comp || 'mag', n: Math.min(Math.max(+b.n || 1e6, 1e4), 8e6), derived: _derived(b.derived) }));
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+app.post('/api/post3d/line', async (req, res) => {
+  try {
+    const b = req.body || {}; const p1 = _num3(b.p1), p2 = _num3(b.p2);
+    if (!p1 || !p2) throw new Error('p1、p2 需要三个数');
+    res.json(await pv3('line', { case: _postCase(b.case), time: b.time, p1, p2, n: Math.min(Math.max(+b.n || 200, 10), 2000), fields: (b.fields || []).slice(0, 8), comp: b.comp || 'mag', derived: _derived(b.derived) }));
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+// 网格质量：优先读已有的 log.checkMesh；run=1 时现跑 checkMesh（只读，不写 sets）
+function _parseCheckMesh(s) {
+  const g = (re, f = Number) => { const m = re.exec(s); return m ? f(m[1]) : null; };
+  return { cells: g(/cells:\s+(\d+)/), points: g(/points:\s+(\d+)/), faces: g(/faces:\s+(\d+)/),
+    hex: g(/hexahedra:\s+(\d+)/), poly: g(/polyhedra:\s+(\d+)/), prisms: g(/prisms:\s+(\d+)/), tets: g(/tetrahedra:\s+(\d+)/),
+    nonOrthoMax: g(/Mesh non-orthogonality Max:\s+([\d.eE+-]+)/), nonOrthoAvg: g(/average:\s+([\d.eE+-]+)/),
+    skewMax: g(/Max skewness = ([\d.eE+-]+)/), aspectMax: g(/Max aspect ratio = ([\d.eE+-]+)/),
+    minVol: g(/Min volume = ([\d.eE+-]+)/), ok: /Mesh OK\./.test(s) ? true : (/Failed \d+ mesh checks/.test(s) ? false : null),
+    failed: (s.match(/\*\*\*[^\n]+/g) || []).slice(0, 8) };
+}
+app.get('/api/post3d/meshcheck', async (req, res) => {
+  try {
+    const c = _postCase(req.query.case);
+    if (req.query.run === '1') {
+      const dec = !fssync.existsSync(path.join(c, 'constant', 'polyMesh', 'owner')) && fssync.existsSync(path.join(c, 'processor0'));
+      const r = await _foamExecCapture(`cd "${c}" && checkMesh -constant ${dec ? '-case processor0 ' : ''}-noFunctionObjects 2>&1 | tail -80`, 600_000);
+      return res.json({ source: dec ? 'checkMesh（processor0 子域）' : 'checkMesh（刚运行）', ...(_parseCheckMesh(r.out)), tail: r.out.slice(-4000) });
+    }
+    for (const f of ['log.checkMesh', 'logs/mesh.stdout.log']) {
+      try { const s = await fs.readFile(path.join(c, f), 'utf8'); return res.json({ source: f, ..._parseCheckMesh(s), tail: s.slice(-4000) }); } catch {}
+    }
+    res.json({ source: null });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+// 几何页并入可视化的「网格与几何」模式（STL、patch、网格线、checkMesh）
+app.get(['/geometry', '/geometry.html'], (req, res) => res.redirect('/post?mode=mesh' + (req.query.case ? '&case=' + encodeURIComponent(String(req.query.case)) : '')));
+
 // 浏览工作区，给 ParaView 面板做文件选择用
 app.get('/api/sim/browse', async (req, res) => {
   try {
@@ -7726,9 +10563,24 @@ app.post('/api/foam/inspect', async (req, res) => {
 app.get('/api/foam/runs', (req, res) => {
   res.json({ runs: [...SOLVER_RUNS.entries()].map(([id, r]) => ({
     runId: id, casePath: r.casePath, command: r.command,
+    ownerTaskId: r.ownerTaskId || null,
     started: r.started, ended: r.ended, exitCode: r.exitCode,
     running: !r.ended
   })) });
+});
+// ============ 自动设计（Optuna study 只读视图）============
+app.get('/api/opt/studies', async (req, res) => {
+  try { res.json(await _runOptDriver(['list', '--base_dir', OPT_BASE_DIR])); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get('/api/opt/study/:id', async (req, res) => {
+  if (!/^[A-Za-z0-9_-]+$/.test(req.params.id)) return res.status(400).json({ error: 'invalid study id' });
+  try {
+    const status = await _runOptDriver(['status', '--study_id', req.params.id, '--base_dir', OPT_BASE_DIR]);
+    let spec = null;
+    try { spec = JSON.parse(await fs.readFile(path.join(OPT_BASE_DIR, req.params.id, 'study.json'), 'utf8')); } catch {}
+    res.json({ ...status, search_space: spec?.search_space || [], objective: spec?.objective || null, active_trial: activeOptTrial });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 app.post('/api/foam/run', async (req, res) => {
   try {
@@ -8139,7 +10991,10 @@ app.get('/api/pv/probe', async (req, res) => {
 });
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server });
+const wss = new WebSocketServer({
+  server,
+  verifyClient: ({ req }, done) => AccessAuth.isAuthorized(req, ACCESS_TOKEN) ? done(true) : done(false, 401, 'Unauthorized'),
+});
 
 // ============== WebSocket 心跳（防代理空闲断开 / 自动清理僵尸连接）==============
 const WS_PING_MS = 25_000;
@@ -8153,9 +11008,12 @@ const wsHeartbeat = setInterval(() => {
 }, WS_PING_MS);
 wss.on('close', () => clearInterval(wsHeartbeat));
 
-wss.on('connection', (ws) => {
-  ws.isAlive = true;
-  ws.on('pong', () => { ws.isAlive = true; });
+wss.on('connection', (socket) => {
+  socket.isAlive = true;
+  socket.on('pong', () => { socket.isAlive = true; });
+  const ws = createTaskTransport(socket, () => session.task?._runningSession === session
+    ? [...sessions].filter(([, observer]) => observer !== session && observer.task === session.task).map(([transport]) => transport)
+    : []);
   const session = {
     messages: [{ role: 'system', content: SYSTEM_PROMPT_BASE(WORKSPACE) }],
     checkpoints: [], currentCheckpoint: null,
@@ -8176,9 +11034,11 @@ wss.on('connection', (ws) => {
   // 挂载到当前任务：刷新/换模型/重启后接着原上下文继续（任务持久化）
   attachSessionToTask(session, ensureCurrentTask());
   sessions.set(ws, session); allClients.add(ws);
+  if (session.task.recovery?.status === 'pending') _recoveryNotice(session.task);
   ws.send(JSON.stringify({ type: 'tools_state', enabled: [...session.enabledTools], groups: TOOL_GROUPS }));
   ws.send(JSON.stringify(taskListPayload(session)));
   try { ws.send(JSON.stringify(taskHistoryPayload(session.task))); } catch {}
+  sendTaskRuntime();
   buildTree().then(t => ws.send(JSON.stringify({ type: 'tree', tree: t }))).catch(()=>{});
   broadcastCheckpoints(ws); broadcastEdits(ws); broadcastTodos(ws);
   ws.send(JSON.stringify({ type: 'sim_state', enabled: false, running: !!PV_STATE.pid }));
@@ -8189,6 +11049,13 @@ wss.on('connection', (ws) => {
   ws.send(JSON.stringify({ type: 'custom_state', enabled: !!session.customMode, name: SETTINGS.customName || '', root: SETTINGS.customRoot || '', prompt: SETTINGS.customPrompt || '' }));
 
   // —— 交互式 shell ——
+  function sendTaskRuntime() {
+    const owner = taskOwner(session);
+    if (!owner._running) { ws.send(JSON.stringify({ type: 'agent_idle', state: getTaskState(owner) })); return; }
+    ws.send(JSON.stringify({ type: 'agent_start' }));
+    ws.send(JSON.stringify({ type: 'agent_phase', phase: owner.pendingApproval ? 'awaiting_user' : owner.currentProc ? 'tool_exec' : 'llm_thinking', detail: 'Task owner is running' }));
+  }
+
   function ensureShell() {
     if (session.shell && !session.shell.killed) return session.shell;
     const sh = spawnShell(session.shellCwd);
@@ -8202,9 +11069,25 @@ wss.on('connection', (ws) => {
 
   ws.on('message', async (raw) => {
     let m; try { m = JSON.parse(raw.toString()); } catch { return; }
-    const s = sessions.get(ws); if (!s) return;
+    const attached = sessions.get(ws); if (!attached) return;
+    const owner = taskOwner(attached);
+    const ownerControls = ['user', 'stop', 'kill_all', 'approval', 'set_auto', 'set_mode', 'set_goal', 'set_tools', 'set_foam', 'set_mfix', 'set_lbm', 'set_custom'];
+    const s = ownerControls.includes(m.type) ? owner : attached;
+    if (owner._running && ['reset', 'compact', 'restore_checkpoint', 'undo_edit', 'undo_all'].includes(m.type)) {
+      ws.send(JSON.stringify({ type: 'term', line: '[task] Stop the task owner before modifying running state' }));
+      return;
+    }
     if (m.type === 'user') {
+      recoveryManager.cancel(s.task, 'new_message');
+      try { await Fidelity.onUserMessage(s, m.text); } catch {}
       s.awaitingUserChoice = false; s._pendingUserText = m.text;
+      if (s.task && !s.task.taskText && m.text && String(m.text).trim()) s.task.taskText = String(m.text).slice(0, 4000);
+      s._recoveryApprovalBlocked = false;
+      clearTimeout(s._choiceTimer); s._choiceTimer = null; s.pendingQuestion = null; s._questionCarried = false; s._choiceTimeouts = 0; s._qMuteNoted = false;
+      clearTimeout(s._idleNotifyTimer); s._idleNotifyTimer = null; // A7: 用户回复 → 取消空闲通知
+      persistSession(s, true);
+      if (s.task) s.task.wakeCount = 0;
+      if (s.task && s.task.goal) s.task.goal.nudges = 0;
       // 🧭 Codex 式引导：智能体运行中用户发来的新消息不打断当前工作，排队到下一步推理时注入
       if (s._running) {
         (s._steerQueue || (s._steerQueue = [])).push({ text: m.text, attachments: m.attachments || [] });
@@ -8214,53 +11097,139 @@ wss.on('connection', (ws) => {
       // 首条用户消息自动作为任务标题
       if (s.task && (s.task.title === '新任务' || !s.task.title) && m.text) { s.task.title = String(m.text).slice(0, 40); broadcastTaskState(); }
       s.messages[0] = { role: 'system', content: buildSystemPrompt(s) };
-      runAgent(ws, m.text, m.attachments || []);
+      runAgent(s._ws, m.text, m.attachments || []);
     }
     else if (m.type === 'task_new') {
-      if (s._running) { ws.send(JSON.stringify({ type: 'term', line: '[任务] 当前任务运行中，请先停止再新建' })); return; }
+      if (s._running && !ws.isHeadless) { _makeHeadlessSession(s.task); }
       persistSession(s, true);
       const t = createTask(typeof m.title === 'string' && m.title.trim() ? m.title.trim() : '新任务');
       attachSessionToTask(s, t);
-      s.checkpoints = []; s.pendingEdits = []; s.taskComplete = false; s.workMem = null;
+      s.checkpoints = []; s.pendingEdits = []; s.taskComplete = false;
       broadcastTaskState();
       ws.send(JSON.stringify(taskHistoryPayload(t)));
       broadcastCheckpoints(ws); broadcastEdits(ws); broadcastTodos(ws);
       ws.send(JSON.stringify({ type: 'term', line: `[任务] 已新建「${t.title}」` }));
     }
     else if (m.type === 'task_switch') {
-      if (s._running) { ws.send(JSON.stringify({ type: 'term', line: '[任务] 当前任务运行中，请先停止再切换' })); return; }
+      if (s._running && !ws.isHeadless) { _makeHeadlessSession(s.task); }
       const t = TASKS.get(m.id);
       if (!t) { ws.send(JSON.stringify({ type: 'term', line: '[任务] 不存在：' + m.id })); return; }
       persistSession(s, true);
       CURRENT_TASK_ID = t.id; _saveTaskMeta();
       attachSessionToTask(s, t);
-      s.checkpoints = []; s.pendingEdits = []; s.taskComplete = false; s.workMem = null;
+      s.checkpoints = []; s.pendingEdits = []; s.taskComplete = false;
       broadcastTaskState();
       ws.send(JSON.stringify(taskHistoryPayload(t)));
       broadcastCheckpoints(ws); broadcastEdits(ws); broadcastTodos(ws);
+      sendTaskRuntime();
       ws.send(JSON.stringify({ type: 'term', line: `[任务] 已切换到「${t.title}」（${t.messages.length} 条上下文）` }));
     }
     else if (m.type === 'task_delete') {
       const t = TASKS.get(m.id);
       if (!t) return;
       if (t._runningSession && t._runningSession._running) { ws.send(JSON.stringify({ type: 'term', line: '[任务] 该任务运行中，请先停止再删除' })); return; }
+      recoveryManager.cancel(t, 'task_delete');
       TASKS.delete(m.id);
       try { fssync.unlinkSync(_taskFile(m.id)); } catch {}
-      if (CURRENT_TASK_ID === m.id) {
-        const t2 = ensureCurrentTask();             // 退到最近的其他任务，没有则新建
-        attachSessionToTask(s, t2);
-        s.checkpoints = []; s.pendingEdits = []; s.taskComplete = false; s.workMem = null;
-        ws.send(JSON.stringify(taskHistoryPayload(t2)));
-        broadcastCheckpoints(ws); broadcastEdits(ws); broadcastTodos(ws);
+      const replacement = CURRENT_TASK_ID === m.id ? ensureCurrentTask() : null;
+      for (const [viewer, viewing] of sessions) if (viewing.task === t) {
+        const next = replacement || ensureCurrentTask();
+        attachSessionToTask(viewing, next);
+        viewing.checkpoints = []; viewing.pendingEdits = []; viewing.taskComplete = false;
+        viewer.send(JSON.stringify(taskHistoryPayload(next)));
+        broadcastCheckpoints(viewer); broadcastEdits(viewer); broadcastTodos(viewer);
       }
       broadcastTaskState();
       ws.send(JSON.stringify({ type: 'term', line: `[任务] 已删除「${t.title}」` }));
+    }
+    else if (m.type === 'task_set_model') {
+      // 单个任务换模型：只影响这个任务，设置里的主模型不变
+      const t = TASKS.get(m.id) || s.task; if (!t) return;
+      const ref = m.model ? { provider: String(m.provider || 'main'), model: String(m.model) } : null;
+      if (ref && !modelChoices().some(c => c.provider === ref.provider && c.model === ref.model)) { ws.send(JSON.stringify({ type: 'error', message: '这个模型不在可选清单里，先到 设置 › 模型与 API 登记' })); return; }
+      t.modelRef = ref; persistTaskNow(t); broadcastTaskState();
+      ws.send(JSON.stringify({ type: 'term', line: `[模型] 任务「${t.title}」改用 ${modelLabel(ref)}` }));
+    }
+    else if (m.type === 'multi_run') {
+      // 多模型运行：同一条指令发给 2–5 个模型，每个模型一个独立任务、独立子目录，后台并行跑，之后并排比较
+      const refs = (Array.isArray(m.models) ? m.models : []).map(r => ({ provider: String(r.provider || 'main'), model: String(r.model || '') }))
+        .filter(r => r.model && modelChoices().some(c => c.provider === r.provider && c.model === r.model));
+      const uniq = [...new Map(refs.map(r => [r.provider + '|' + r.model, r])).values()].slice(0, 5);
+      const text = String(m.text || '').trim();
+      if (!text) { ws.send(JSON.stringify({ type: 'error', message: '多模型运行需要一条指令' })); return; }
+      if (uniq.length < 2) { ws.send(JSON.stringify({ type: 'error', message: '多模型运行至少选 2 个模型' })); return; }
+      const res = multiRunStart(text, uniq, { autoMode: s.autoMode !== false, agentMode: s.task && s.task.agentMode, attachments: m.attachments || [] });
+      ws.send(JSON.stringify({ type: 'multi_run_started', group: res.group, tasks: res.tasks }));
+      ws.send(JSON.stringify({ type: 'term', line: `[多模型] 已同时交给 ${uniq.length} 个模型：${uniq.map(modelLabel).join('、')}；每个在 ${res.dirRel}/<模型>/ 下独立工作` }));
     }
     else if (m.type === 'task_rename') {
       const t = TASKS.get(m.id);
       if (t && typeof m.title === 'string' && m.title.trim()) { t.title = m.title.trim().slice(0, 60); persistTaskNow(t); broadcastTaskState(); }
     }
-    else if (m.type === 'set_auto') s.autoMode = !!m.value;
+    else if (m.type === 'set_auto') {
+      s.autoMode = !!m.value;
+      if (s.task) { s.task.autoMode = s.autoMode; persistTaskNow(s.task); }
+      for (const other of sessions.values()) if (other.task === s.task) other.autoMode = s.autoMode;
+      if (!s.autoMode && s.task) recoveryManager.clear(s.task);
+      broadcastTaskState();
+    }
+    else if (m.type === 'set_mode') {
+      if (!s.task) return;
+      s.task.agentMode = m.value === 'plan' ? 'plan' : 'build';
+      persistTaskNow(s.task); broadcastTaskState();
+      ws.send(JSON.stringify({ type: 'term', line: `[模式] ${s.task.agentMode === 'plan' ? '规划（只读，不改文件不跑求解）' : '执行（全部工具）'}` }));
+    }
+    else if (m.type === 'set_goal') {
+      if (!s.task) return;
+      const text = typeof m.text === 'string' ? m.text.trim().slice(0, 600) : '';
+      if (!text || m.clear) s.task.goal = null;
+      else s.task.goal = { text, criteria: typeof m.criteria === 'string' ? m.criteria.trim().slice(0, 1200) : '', status: 'active', nudges: 0, setAt: Date.now() };
+      persistTaskNow(s.task); broadcastTaskState();
+    }
+    else if (m.type === 'task_revert' || m.type === 'task_unrevert') {
+      const t = s.task;
+      if (!t || (m.id && m.id !== t.id)) return;
+      if (s._running || (t._runningSession && t._runningSession._running)) { ws.send(JSON.stringify({ type: 'term', line: '[任务] 运行中不能回滚，请先停止' })); return; }
+      try {
+        if (m.type === 'task_revert') {
+          if (!Number.isInteger(m.ui) || m.ui < 0) throw new Error('消息序号无效');
+          const r = await revertTask(t, m.ui);
+          s.checkpoints = []; s.pendingEdits = []; s.taskComplete = false; s.currentCheckpoint = null;
+          persistTaskNow(t);
+          ws.send(JSON.stringify(taskHistoryPayload(t)));
+          ws.send(JSON.stringify({ type: 'task_reverted', text: r.text, messages: r.messages, files: r.files, skipped: r.skipped }));
+        } else {
+          const r = await unrevertTask(t);
+          persistTaskNow(t);
+          ws.send(JSON.stringify(taskHistoryPayload(t)));
+          ws.send(JSON.stringify({ type: 'task_unreverted', messages: r.messages, files: r.files }));
+        }
+        broadcastEdits(ws); broadcastCheckpoints(ws); broadcastTree(); broadcastTaskState();
+      } catch (e) { ws.send(JSON.stringify({ type: 'error', message: (m.type === 'task_revert' ? '回滚失败：' : '撤销回滚失败：') + e.message })); }
+    }
+    else if (m.type === 'task_fork') {
+      if (s._running) { ws.send(JSON.stringify({ type: 'term', line: '[任务] 运行中不能分叉，请先停止' })); return; }
+      const src = TASKS.get(m.id) || s.task; if (!src) return;
+      persistSession(s, true);
+      const t = createTask(`${src.title || '任务'} · 分支`);
+      let msgs = JSON.parse(JSON.stringify(src.messages || []));
+      // 可选：只保留到第 n 条用户消息之前（从某轮分叉）
+      if (Number.isInteger(m.beforeUser) && m.beforeUser >= 0) {
+        const at = visibleUserIndices(msgs)[m.beforeUser];
+        if (at !== undefined) msgs = msgs.slice(0, at);
+      }
+      t.messages = msgs.length ? msgs : [{ role: 'system', content: SYSTEM_PROMPT_BASE(WORKSPACE) }];
+      t.todos = JSON.parse(JSON.stringify(src.todos || []));
+      t.workMem = src.workMem ? JSON.parse(JSON.stringify(src.workMem)) : undefined;
+      t.autoMode = src.autoMode; t.agentMode = src.agentMode; t.goal = src.goal ? { ...src.goal, nudges: 0 } : null;
+      t.forkOf = src.id; persistTaskNow(t);
+      attachSessionToTask(s, t);
+      s.checkpoints = []; s.pendingEdits = []; s.taskComplete = false;
+      broadcastTaskState();
+      ws.send(JSON.stringify(taskHistoryPayload(t)));
+      broadcastCheckpoints(ws); broadcastEdits(ws); broadcastTodos(ws);
+      ws.send(JSON.stringify({ type: 'term', line: `[任务] 已从「${src.title}」分叉出新分支（${t.messages.length} 条上下文）` }));
+    }
     else if (m.type === 'skill_save_ui') {
       // 自进化沉淀卡：用户在 UI 确认后把本轮经验存入技能库（已经 verifier 盖章，force 落盘）
       try {
@@ -8275,14 +11244,6 @@ wss.on('connection', (ws) => {
     else if (m.type === 'skill_forget_ui') {
       try { await SkillLib.removeSkill(m.id); ws.send(JSON.stringify({ type: 'term', line: `[技能库] 已删除 ${m.id}` })); } catch {}
     }
-    else if (m.type === 'nb_open') {
-      const k = nbKernelStart(m.path); k.subscribers.add(ws);
-      ws.send(JSON.stringify({ type: 'nb_msg', path: m.path, msg: { type: k.ready ? 'ready' : 'starting' } }));
-    }
-    else if (m.type === 'nb_execute') { nbKernelStart(m.path).subscribers.add(ws); nbKernelSend(m.path, { action: 'execute', code: m.code, cell_id: m.cell_id }); }
-    else if (m.type === 'nb_interrupt') { nbKernelSend(m.path, { action: 'interrupt' }); }
-    else if (m.type === 'nb_restart') { nbKernelSend(m.path, { action: 'restart' }); }
-    else if (m.type === 'nb_close') { const k = NB_KERNELS.get(m.path); if (k) k.subscribers.delete(ws); }
     else if (m.type === 'set_tools') {
       const incoming = Array.isArray(m.tools) ? m.tools : [];
       const enabled = new Set([...TOOL_GROUPS.edit, ...incoming]);  // 编辑类始终开启
@@ -8293,7 +11254,7 @@ wss.on('connection', (ws) => {
     else if (m.type === 'set_foam') {
       s.foamMode = !!m.value;
       // 同时把 foam 工具组并入启用集合（关掉时不强制移除，让用户自己取消）
-      if (s.foamMode) for (const t of TOOL_GROUPS.foam) s.enabledTools.add(t);
+      if (s.foamMode) for (const t of [...TOOL_GROUPS.foam, ...TOOL_GROUPS.opt]) s.enabledTools.add(t);
       // ParaView 帧推送：任一 Beta 模式启用即订阅，全部关闭才取消
       if (s.foamMode || s.mfixMode || s.lbmMode) PV_STATE.subscribers.add(ws);
       else PV_STATE.subscribers.delete(ws);
@@ -8342,14 +11303,17 @@ wss.on('connection', (ws) => {
     else if (m.type === 'pty_kill') { if (s.shell) try { s.shell.kill(); } catch {} }
     else if (m.type === 'approval' && s.pendingApproval) { const fn = s.pendingApproval; s.pendingApproval = null; fn(!!m.approved); }
     else if (m.type === 'stop') {
+      recoveryManager.cancel(s.task, 'stop');
       s.aborted = true;
       if (s.aborter) try { s.aborter.abort(); } catch {}
+      if (s.task) { const p = _wakePending.get(s.task.id); if (p) { clearTimeout(p.timer); _wakePending.delete(s.task.id); } }
       // 递归杀当前 agent 同步子进程树（run_command 等）。
       // ⚠ 重要边界：仅杀 s.currentProc，不动 SOLVER_RUNS — 那是用户显式启的后台求解，
       // 必须靠 foam_solver_stop / mfix_solver_stop / lbm_solver_stop 或面板按钮单独控制，
       // 不能让"停止 agent"误杀正在跑的 OpenFOAM/MFIX/LBM 仿真。
       if (s.currentProc) {
-        const pid = s.currentProc.pid;
+        const pid = (s.currentProc._isSolver || IS_WIN) ? s.currentProc.pid : 0;
+        if (!pid) _killProcTree(s.currentProc);
         try { s.currentProc.kill(); } catch {}
         if (IS_WIN && pid) {
           try { spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true }); } catch {}
@@ -8363,6 +11327,7 @@ wss.on('connection', (ws) => {
       ws.send(JSON.stringify({ type: 'term', line: `[Agent 已停止]${tail}` }));
       ws.send(JSON.stringify({ type: 'agent_end' }));
     } else if (m.type === 'kill_all') {
+      recoveryManager.cancel(s.task, 'kill_all');
       // v0.7.0: 强行终止 —— 杀光所有受 CFDriver 管控的子进程
       // 包括：当前 agent 同步进程、所有 SOLVER_RUNS（OpenFOAM/MFIX/LBM 异步求解）、ParaView、pty shell
       s.aborted = true;
@@ -8386,10 +11351,11 @@ wss.on('connection', (ws) => {
       // 2) 所有未结束的后台求解器
       for (const run of SOLVER_RUNS.values()) {
         if (run.ended) continue;
-        try { run.proc.kill('SIGTERM'); } catch {}
-        killTree(run.proc && run.proc.pid);
-        setTimeout(() => { try { if (run.proc && !run.proc.killed) run.proc.kill('SIGKILL'); } catch {} }, 1500);
+        killRunTree(run); killTree(run.pid || (run.proc && run.proc.pid));
+        setTimeout(() => killRunTree(run, true), 1500);
+        clearInterval(run._tail); clearInterval(run._alive);
         run.ended = Date.now(); run.exitCode = run.exitCode == null ? -9 : run.exitCode;
+        _persistRuns();
         for (const sub of run.subs) if (sub.readyState === 1) {
           try { sub.send(JSON.stringify({ type: 'solver_done', runId: run.runId, exitCode: -9 })); } catch {}
         }
@@ -8403,6 +11369,7 @@ wss.on('connection', (ws) => {
       ws.send(JSON.stringify({ type: 'term', line: `[强行终止] 已杀 ${killedCount} 个进程（含后台求解器、ParaView、shell）` }));
       ws.send(JSON.stringify({ type: 'agent_end' }));
     } else if (m.type === 'reset') {
+      recoveryManager.cancel(s.task, 'reset');
       s.messages = [{ role: 'system', content: buildSystemPrompt(s) }];
       s.checkpoints = []; s.pendingEdits = []; s.todos = []; s.taskComplete = false;
       persistSession(s, true);   // 同步清空落盘的任务上下文
@@ -8446,11 +11413,16 @@ wss.on('connection', (ws) => {
     PV_STATE.subscribers.delete(ws);
     // 从所有求解器订阅集合中移除，避免向已关闭 socket 推送
     for (const run of SOLVER_RUNS.values()) run.subs.delete(ws);
+    allClients.delete(ws);
+    if ((session._running || session._choiceTimer) && ws.detach(session)) {
+      persistSession(session, true);
+      return;
+    }
     // 中断进行中的审批/agent 循环，防止内存悬挂
     if (session.pendingApproval) { try { session.pendingApproval(false); } catch {} session.pendingApproval = null; }
     if (session.aborter) { try { session.aborter.abort(); } catch {} }
     session.aborted = true;
-    sessions.delete(ws); allClients.delete(ws);
+    sessions.delete(ws);
   });
 });
 
@@ -8468,9 +11440,28 @@ process.on('uncaughtException', (err) => {
 await loadSettings();
 await loadCopilotState();
 await autoProbeEnvironment();
+try { await refreshPackIndex(); } catch (e) { console.warn('[packs]', e.message); }
+startMcpServers().catch(e => console.warn('[mcp]', e.message));
 const HOST = parseCliHost() || process.env.HOST || '127.0.0.1';
+ACCESS_TOKEN = AccessAuth.loadAccessToken({ host: HOST, file: path.join(__dirname, '.access_token') });
+// 重启时旧进程可能还没释放端口：短暂重试，仍被占用就退出，避免留下不监听的僵尸进程
+let listenRetries = 0;
+server.on('error', (err) => {
+  if (err && err.code === 'EADDRINUSE' && listenRetries < 10) {
+    listenRetries++;
+    console.warn(`[listen] ${HOST}:${PORT} 被占用，${listenRetries}/10 次重试（1 s 后）`);
+    setTimeout(() => server.listen(PORT, HOST), 1000);
+    return;
+  }
+  console.error('[listen] 无法监听，退出:', err && err.message || err);
+  process.exit(1);
+});
 server.listen(PORT, HOST, () => {
-  console.log(`\n  CFDriver v10.0.0 已启动  (by LZF, V10 — STL 参数化生成 + OpenFOAM 环境体检 + 离线三维预览 + 本地大模型 + 技能自进化)`);
+  recoveryManager.restore(TASKS.values());
+  try { reattachRuns(); } catch (e) { console.warn('[runs] 接管失败:', e.message); }
+  try { scanExternalRuns(); } catch (e) { console.warn('[runs] 扫描手动作业失败:', e.message); }
+  if (process.platform === 'linux') setInterval(() => { try { scanExternalRuns(); } catch {} }, 20_000).unref();
+  console.log(`\n  CFDriver 开发版已启动 (by LZF; CFD 执行、物理评估与候选优化)`);
   console.log(`  平台: ${process.platform}`);
   console.log(`  工作目录: ${WORKSPACE}`);
   console.log(`  Provider:${SETTINGS.provider}  模型: ${SETTINGS.provider === 'copilot' ? SETTINGS.copilotModel : SETTINGS.model}`);
@@ -8493,4 +11484,12 @@ server.listen(PORT, HOST, () => {
   }
   console.log(`  监听:    ${HOST}:${PORT}`);
   console.log(`  打开:    http://${HOST === '0.0.0.0' ? '<服务器IP>' : HOST}:${PORT}\n`);
+  if (ACCESS_TOKEN) {
+    const ips = Object.values(os.networkInterfaces()).flat().filter(n => n && n.family === 'IPv4' && !n.internal).map(n => n.address);
+    console.log(`  远程访问已启用口令（.access_token / CFD_ACCESS_TOKEN）。手机打开：`);
+    for (const ip of (HOST === '0.0.0.0' ? ips : [HOST])) console.log(`    http://${ip}:${PORT}/app?token=<见 .access_token>`);
+    console.log('');
+  } else if (!AccessAuth.isLoopbackHost(HOST)) {
+    console.warn('  ⚠ 绑定在非回环地址但未设置访问口令\n');
+  }
 });

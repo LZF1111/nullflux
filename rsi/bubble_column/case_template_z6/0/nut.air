@@ -1,0 +1,59 @@
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    object      nut.air;
+}
+
+dimensions      [0 2 -1 0 0 0 0];
+
+internalField   uniform 1e-8;
+
+boundaryField
+{
+    zone1_inlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    zone2_inlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    zone3_inlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    zone4_inlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    zone5_inlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    zone6_inlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    outlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    walls
+    {
+        type                nutkWallFunction;
+        value               $internalField;
+    }
+    frontAndBack
+    {
+        type         empty;
+    }
+}

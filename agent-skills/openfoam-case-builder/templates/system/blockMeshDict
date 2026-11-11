@@ -1,0 +1,71 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| OpenFOAM blockMeshDict 模板 — 简单通道/绕流外域盒子                          |
+| 说明: convertToMeters 换算 vertices 单位; 改 vertices 与网格分格数即用       |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      blockMeshDict;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+convertToMeters 1;          // vertices 单位=米; 若用 mm 写 0.001
+
+// 域尺寸（米）：长 Lx × 高 Ly × 厚 Lz
+xMin  0;   xMax  1.0;
+yMin  0;   yMax  0.2;
+zMin  0;   zMax  0.1;
+
+vertices
+(
+    ($xMin $yMin $zMin)   // 0
+    ($xMax $yMin $zMin)   // 1
+    ($xMax $yMax $zMin)   // 2
+    ($xMin $yMax $zMin)   // 3
+    ($xMin $yMin $zMax)   // 4
+    ($xMax $yMin $zMax)   // 5
+    ($xMax $yMax $zMax)   // 6
+    ($xMin $yMax $zMax)   // 7
+);
+
+blocks
+(
+    // (顶点) (nx ny nz) simpleGrading (rx ry rz)
+    hex (0 1 2 3 4 5 6 7) (100 40 1) simpleGrading (1 1 1)
+);
+
+edges
+(
+);
+
+boundary
+(
+    inlet
+    {
+        type patch;
+        faces ( (0 4 7 3) );
+    }
+    outlet
+    {
+        type patch;
+        faces ( (1 2 6 5) );
+    }
+    walls
+    {
+        type wall;
+        faces ( (0 1 5 4) (3 7 6 2) );   // 下壁 + 上壁
+    }
+    frontAndBack        // 2D: z 向 1 层，前后面设 empty
+    {
+        type empty;
+        faces ( (0 3 2 1) (4 5 6 7) );
+    }
+);
+
+mergePatchPairs
+(
+);
+
+// ************************************************************************* //

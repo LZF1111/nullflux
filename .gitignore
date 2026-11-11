@@ -1,9 +1,22 @@
-# Files (history rewrites are forbidden)
+node_modules/
+__pycache__/
+*.pyc
+.pytest_cache/
+.conda/
+.env
+.env.*
+!.env.example
+settings.json
+copilot.json
+.access_token
+.nullflux/
+.cfdriver/
+tasks/
 *.log
-*.swp
+.server.*
+agent-skills/*/backplane/vendor/
+*.pdf
+*.docx
+*.pptx
 .DS_Store
 Thumbs.db
-
-# Local runtime state
-node_modules/
-.nullflux/

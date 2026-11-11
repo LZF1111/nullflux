@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>可视化 · CFDriver</title>
+<link rel="icon" href="/icon.svg">
+<script type="importmap">{ "imports": { "three": "/vendor/three/three.module.js" } }</script>
+<link rel="stylesheet" href="/post.css">
+</head>
+<body>
+<header>
+  <h1>可视化</h1>
+  <div class="seg" id="mode" role="tablist" aria-label="模式">
+    <button role="tab" data-m="post" aria-selected="true">结果</button>
+    <button role="tab" data-m="mesh" aria-selected="false">网格与几何</button>
+  </div>
+  <select id="case" aria-label="算例"></select>
+  <div class="time" id="timebar" aria-label="时刻">
+    <button class="ib" id="tprev" title="上一个时刻" aria-label="上一个时刻">‹</button>
+    <select id="time" aria-label="时刻"></select>
+    <button class="ib" id="tnext" title="下一个时刻" aria-label="下一个时刻">›</button>
+    <button class="ib" id="tplay" title="逐时刻播放" aria-label="播放">▶</button>
+  </div>
+  <span class="muted" id="caseinfo"></span>
+  <nav><a href="/monitor">实时监视</a><a href="/app">← 返回智能体</a></nav>
+</header>
+<main>
+  <aside id="side">
+    <section id="quick">
+      <h2>一键视图</h2>
+      <div class="grid2" id="presets"></div>
+    </section>
+    <section>
+      <div class="row"><h2>图层</h2><div class="add"><button id="add-btn" class="sm" aria-haspopup="menu">＋ 添加</button><div class="menu" id="add-menu" role="menu" hidden></div></div></div>
+      <ol id="layers"></ol>
+      <p class="muted small" id="layers-empty">还没有图层。点上面的一键视图，或「＋ 添加」。</p>
+    </section>
+    <section id="editor" hidden></section>
+    <section id="calc" hidden></section>
+    <section id="meshcard" hidden></section>
+  </aside>
+  <section id="stage">
+    <div id="view" aria-label="三维视图"></div>
+    <div id="legends"></div>
+    <div id="tlabel" aria-live="polite"></div>
+    <div id="probe" hidden></div>
+    <div id="busy" hidden><span class="spin"></span><span id="busy-t">计算中…</span></div>
+    <div id="toast" role="status" hidden></div>
+    <div class="toolbar" id="tools">
+      <button class="ib" data-v="fit" title="适应窗口（双击空白处也可）">⤢</button>
+      <button class="ib" data-v="+x" title="沿 +X 看">X</button>
+      <button class="ib" data-v="+y" title="沿 +Y 看">Y</button>
+      <button class="ib" data-v="+z" title="沿 +Z 看">Z</button>
+      <button class="ib" data-v="iso" title="等轴测">◩</button>
+      <button class="ib" id="proj" title="透视 / 平行投影切换">P</button>
+      <button class="ib" id="bg" title="背景：浅 / 深">◐</button>
+      <button class="ib" id="shot" title="保存 PNG 截图">⤓</button>
+      <button class="ib" id="fs" title="全屏">⛶</button>
+    </div>
+    <div id="bottom" hidden>
+      <div class="row"><b id="bottom-t">沿线取值</b><span class="muted small" id="bottom-s"></span><span class="sp"></span><button class="sm" id="csv">下载 CSV</button><button class="ib" id="bottom-x" aria-label="关闭">✕</button></div>
+      <div id="chart"></div>
+    </div>
+  </section>
+</main>
+<script type="module" src="/post.js"></script>
+</body>
+</html>

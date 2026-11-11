@@ -1,0 +1,60 @@
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    object      T.water;
+}
+
+dimensions      [0 0 0 1 0 0 0];
+
+internalField   uniform 300;
+
+boundaryField
+{
+    zone1_inlet
+    {
+        type                fixedValue;
+        value               $internalField;
+    }
+    zone2_inlet
+    {
+        type                fixedValue;
+        value               $internalField;
+    }
+    zone3_inlet
+    {
+        type                fixedValue;
+        value               $internalField;
+    }
+    zone4_inlet
+    {
+        type                fixedValue;
+        value               $internalField;
+    }
+    zone5_inlet
+    {
+        type                fixedValue;
+        value               $internalField;
+    }
+    zone6_inlet
+    {
+        type                fixedValue;
+        value               $internalField;
+    }
+    outlet
+    {
+        type                inletOutlet;
+        phi                 phi.water;
+        inletValue          $internalField;
+        value               $internalField;
+    }
+    walls
+    {
+        type                zeroGradient;
+    }
+    frontAndBack
+    {
+        type         empty;
+    }
+}

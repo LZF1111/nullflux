@@ -1,0 +1,93 @@
+#! MFiX-24.x project file — 2D 鼓泡流化床 (TFM 两流体)
+#! 完整可交付输入卡示例; 数值/几何/颗粒按实际工况替换。
+#! 官方参照: tutorials/tfm/fluid_bed_2d
+
+### Run controls
+  RUN_NAME  = 'FB2D'
+  DESCRIPTION = '2D bubbling fluidized bed, Geldart-B sand, air'
+  UNITS     = 'SI'
+  RUN_TYPE  = 'NEW'
+  TIME      = 0.0
+  TSTOP     = 2.0
+  DT        = 1.0E-3
+  DT_MIN    = 1.0E-7
+  DT_MAX    = 1.0E-2
+  ENERGY_EQ = .FALSE.
+  SPECIES_EQ(0:1) = .FALSE. .FALSE.
+  MOMENTUM_X_EQ(0:1) = .TRUE. .TRUE.
+  MOMENTUM_Y_EQ(0:1) = .TRUE. .TRUE.
+
+### Geometry / mesh (2D: KMAX=1, NO_K)
+  COORDINATES = 'CARTESIAN'
+  XLENGTH = 0.20   IMAX = 20
+  YLENGTH = 1.00   JMAX = 100
+  ZLENGTH = 0.01   KMAX = 1
+  NO_K    = .TRUE.
+
+### Gas phase
+  RO_G0 = 1.2
+  MU_G0 = 1.8E-5
+
+### Solids phase (1 TFM solids phase)
+  MMAX      = 1
+  SOLIDS_MODEL(1) = 'TFM'
+  RO_S0(1)  = 2500.0
+  D_P0(1)   = 5.0E-4
+  EP_STAR   = 0.42
+  KT_TYPE   = 'ALGEBRAIC'
+  FRICTION  = .TRUE.
+
+### Drag
+  DRAG_TYPE = 'GIDASPOW_BLEND'
+
+### Numerics
+  MAX_NIT   = 50
+  TOL_RESID = 1.0E-3
+  NORM_G    = 0
+  DISCRETIZE(1:9) = 9*2
+  UR_FAC(1) = 0.8
+
+### Boundary conditions
+# --- 1: gas distributor inlet (bottom, mass inflow) ---
+  BC_TYPE(1) = 'MI'
+  BC_X_W(1) = 0.0    BC_X_E(1) = 0.20
+  BC_Y_S(1) = 0.0    BC_Y_N(1) = 0.0
+  BC_EP_G(1) = 1.0
+  BC_U_G(1) = 0.0    BC_V_G(1) = 0.25
+  BC_P_G(1) = 101325.0
+# --- 2: pressure outlet (top) ---
+  BC_TYPE(2) = 'PO'
+  BC_X_W(2) = 0.0    BC_X_E(2) = 0.20
+  BC_Y_S(2) = 1.0    BC_Y_N(2) = 1.0
+  BC_P_G(2) = 101325.0
+# --- 3: left wall (no-slip gas, partial-slip solids) ---
+  BC_TYPE(3) = 'NSW'
+  BC_X_W(3) = 0.0    BC_X_E(3) = 0.0
+  BC_Y_S(3) = 0.0    BC_Y_N(3) = 1.0
+  BC_JJ_PS(3) = 0
+# --- 4: right wall ---
+  BC_TYPE(4) = 'NSW'
+  BC_X_W(4) = 0.20   BC_X_E(4) = 0.20
+  BC_Y_S(4) = 0.0    BC_Y_N(4) = 1.0
+  BC_JJ_PS(4) = 0
+
+### Initial conditions (union must cover whole domain)
+# --- 1: packed bed region (lower 0.40 m) ---
+  IC_X_W(1) = 0.0    IC_X_E(1) = 0.20
+  IC_Y_S(1) = 0.0    IC_Y_N(1) = 0.40
+  IC_EP_G(1) = 0.42
+  IC_U_G(1) = 0.0    IC_V_G(1) = 0.0
+  IC_U_S(1,1) = 0.0  IC_V_S(1,1) = 0.0
+  IC_P_G(1) = 101325.0
+# --- 2: freeboard (upper, pure gas) ---
+  IC_X_W(2) = 0.0    IC_X_E(2) = 0.20
+  IC_Y_S(2) = 0.40   IC_Y_N(2) = 1.0
+  IC_EP_G(2) = 1.0
+  IC_U_G(2) = 0.0    IC_V_G(2) = 0.0
+  IC_P_G(2) = 101325.0
+
+### Output
+  RES_DT = 0.01
+  WRITE_VTK_FILES = .TRUE.
+  VTK_DT = 0.02
+  VTK_VAR = 1 2 3 4

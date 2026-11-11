@@ -1,0 +1,40 @@
+/*--------------------------------*- C++ -*----------------------------------*\
+| OpenFOAM 场 nut 模板 — 湍流运动粘度 (m^2/s), 由湍流模型计算                   |
+\*---------------------------------------------------------------------------*/
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    object      nut;
+}
+// * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * //
+
+dimensions      [0 2 -1 0 0 0 0];
+
+internalField   uniform 0;
+
+boundaryField
+{
+    inlet
+    {
+        type            calculated;
+        value           uniform 0;
+    }
+    outlet
+    {
+        type            calculated;
+        value           uniform 0;
+    }
+    walls
+    {
+        type            nutkWallFunction;     // 高 Re; 低 Re(y+~1) 用 nutLowReWallFunction
+        value           uniform 0;
+    }
+    frontAndBack
+    {
+        type            empty;
+    }
+}
+
+// ************************************************************************* //

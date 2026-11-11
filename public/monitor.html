@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>实时监视 · CFDriver</title>
+<link rel="icon" href="/icon.svg">
+<style>
+  :root { --bg: #f3f3f4; --card: #fff; --text: #141414; --muted: #6e6e73; --border: #e2e2e5; --accent: #2563eb; --ok: #16a34a; --warn: #d97706; --err: #dc2626; --track: #e8e8ec; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #111214; --card: #1b1c1f; --text: #ececee; --muted: #9a9aa1; --border: #2c2d31; --accent: #60a5fa; --ok: #4ade80; --warn: #fbbf24; --err: #f87171; --track: #2a2b30; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: var(--card); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 2; flex-wrap: wrap; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  header nav { margin-left: auto; display: flex; gap: 14px; }
+  header a { color: var(--accent); text-decoration: none; font-size: 13px; }
+  main { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 12px; max-width: 1280px; margin: 0 auto; }
+  main > *, .job, .jobs > * { min-width: 0; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+  .card h2 { font-size: 13px; margin: 0 0 10px; font-weight: 600; color: var(--muted); letter-spacing: .02em; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
+  .kpi { background: var(--bg); border-radius: 8px; padding: 8px 10px; }
+  .kpi span { display: block; font-size: 11px; color: var(--muted); }
+  .kpi b { font-size: 18px; font-variant-numeric: tabular-nums; }
+  .muted { color: var(--muted); font-size: 12px; }
+  .jobs { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(360px, 100%), 1fr)); gap: 10px; }
+  @media (max-width: 760px) { .jobs { grid-template-columns: 1fr; } main { padding: 8px; } }
+  .job { background: var(--bg); border-radius: 9px; padding: 10px 12px; display: grid; gap: 6px; }
+  .job .top { display: flex; gap: 8px; align-items: baseline; }
+  .job .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+  .badge { font-size: 11px; padding: 1px 7px; border-radius: 999px; background: var(--track); color: var(--muted); white-space: nowrap; }
+  .badge.ok { color: var(--ok); } .badge.warn { color: var(--warn); } .badge.err { color: var(--err); } .badge.info { color: var(--accent); }
+  .bar { height: 7px; background: var(--track); border-radius: 4px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--accent); border-radius: 4px; transition: width .6s; }
+  .grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; font-size: 12px; }
+  .grid4 div span { display: block; color: var(--muted); font-size: 11px; }
+  .grid4 b { font-variant-numeric: tabular-nums; font-weight: 600; }
+  svg.spark { width: 100%; height: 46px; display: block; }
+  pre { margin: 0; font: 11px/1.4 ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-all; color: var(--muted); max-height: 9em; overflow: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; font-size: 11.5px; }
+  td.n { text-align: right; font-variant-numeric: tabular-nums; }
+  .tbl { overflow-x: auto; }
+  .msg { display: grid; grid-template-columns: 64px 1fr; gap: 8px; padding: 5px 0; border-bottom: 1px dashed var(--border); font-size: 12.5px; }
+  .msg:last-child { border-bottom: 0; }
+  .msg .r { color: var(--muted); font-size: 11px; }
+  .tool { font: 11px ui-monospace, Menlo, Consolas, monospace; color: var(--accent); }
+  .err { color: var(--err); }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); margin-right: 6px; vertical-align: middle; }
+  .dot.stale { background: var(--warn); } .dot.down { background: var(--err); }
+</style>
+</head>
+<body>
+<header>
+  <h1>实时监视</h1>
+  <span class="muted"><span class="dot" id="live"></span><span id="stamp">连接中…</span></span>
+  <nav><a href="/post">可视化</a><a href="/post?mode=mesh">网格与几何</a><a href="/app">← 返回智能体</a></nav>
+</header>
+<main>
+  <section class="card"><h2>机器</h2><div class="kpis" id="machine"></div></section>
+  <section class="card"><h2>求解作业</h2><div class="jobs" id="jobs"><span class="muted">读取中…</span></div></section>
+  <section class="card"><h2>分布器 RSI</h2><div id="rsi"><span class="muted">读取中…</span></div></section>
+  <section class="card"><h2>智能体近况</h2><div id="tasks"><span class="muted">读取中…</span></div></section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const fx = (v, d = 3) => v === null || v === undefined || !Number.isFinite(Number(v)) ? '–' : Number(v).toFixed(d);
+const fh = h => h === null || h === undefined ? '–' : h < 1 ? Math.round(h * 60) + ' min' : h < 48 ? h.toFixed(1) + ' h' : (h / 24).toFixed(1) + ' 天';
+const ago = ms => { const s = (Date.now() - ms) / 1000; return s < 90 ? Math.round(s) + ' s 前' : s < 5400 ? Math.round(s / 60) + ' min 前' : (s / 3600).toFixed(1) + ' h 前'; };
+const short = p => { const s = String(p || '').split(/[\\/]/).filter(Boolean); return s.slice(-2).join('/'); };
+
+function spark(hist) {
+  if (!hist || hist.length < 2) return '<div class="muted" style="height:46px;display:flex;align-items:center">速率采样中（每分钟一个点）</div>';
+  const w0 = hist[0][0], w1 = hist[hist.length - 1][0], t0 = Math.min(...hist.map(p => p[1])), t1 = Math.max(...hist.map(p => p[1]));
+  const X = w => 4 + 292 * (w - w0) / Math.max(w1 - w0, 1), Y = t => 42 - 38 * (t - t0) / Math.max(t1 - t0, 1e-12);
+  const d = hist.map((p, i) => (i ? 'L' : 'M') + X(p[0]).toFixed(1) + ' ' + Y(p[1]).toFixed(1)).join(' ');
+  return `<svg class="spark" viewBox="0 0 300 46" preserveAspectRatio="none" aria-label="模拟时间随墙钟">
+    <path d="${d} L${X(w1).toFixed(1)} 44 L4 44 Z" fill="var(--accent)" opacity=".12"/>
+    <path d="${d}" fill="none" stroke="var(--accent)" stroke-width="1.6" vector-effect="non-scaling-stroke"/></svg>`;
+}
+
+function jobCard(j) {
+  const label = j.source === 'rsi' ? 'RSI 试验' : j.source === 'agent' ? '智能体' : j.source === 'task' ? '任务算例' : '外部';
+  const tone = j.fatal ? 'err' : j.logAgeS > 900 ? 'warn' : 'ok';
+  const state = j.fatal ? '日志含 FATAL/NaN' : j.logAgeS > 900 ? `日志 ${Math.round(j.logAgeS / 60)} min 未更新` : '推进中';
+  const pct = j.frac === null ? null : (100 * j.frac);
+  return `<div class="job">
+    <div class="top"><span class="name" title="${esc(j.caseDir)}">${esc(short(j.caseDir))}</span>
+      <span class="badge info">${label}</span><span class="badge ${tone}">${state}</span></div>
+    ${j.task ? `<div class="muted">${esc(j.task)}</div>` : ''}
+    <div class="bar" role="progressbar" aria-valuenow="${pct === null ? 0 : pct.toFixed(0)}" aria-valuemin="0" aria-valuemax="100"><i style="width:${pct === null ? 0 : pct.toFixed(2)}%"></i></div>
+    <div class="grid4">
+      <div><span>模拟时间</span><b>${fx(j.now, 4)}</b></div>
+      <div><span>终点</span><b>${fx(j.end, 3)}</b></div>
+      <div><span>速率 s/h</span><b>${fx(j.rate, 3)}</b></div>
+      <div><span>预计剩余</span><b>${fh(j.etaH)}</b></div>
+      <div><span>进度</span><b>${pct === null ? '–' : pct.toFixed(1) + ' %'}</b></div>
+      <div><span>核数</span><b>${j.np ?? '–'}</b></div>
+      <div><span>Co max</span><b>${fx(j.coMax, 2)}</b></div>
+      <div><span>Δt</span><b>${j.deltaT ? Number(j.deltaT).toExponential(2) : '–'}</b></div>
+    </div>
+    ${spark(j.history)}
+    <pre>${esc((j.tail || []).join('\n'))}</pre>
+  </div>`;
+}
+
+function rsiView(r) {
+  if (!r) return '<span class="muted">还没有 RSI 档案（需配置 RSI_DIST_ROOT 或 ~/rsi_dist）</span>';
+  const ctl = r.control ? `${r.control.state}${r.control.diff !== null ? `（min/壁 差 ${fx(r.control.diff, 3)}）` : ''}` : '对照未完成';
+  const tone = s => /ok|accepted/.test(s) ? 'ok' : /fail|invalid/.test(s) ? 'err' : /running/.test(s) ? 'info' : 'warn';
+  const rows = r.trials.map(t => `<tr>
+    <td>${esc(t.hash)}${t.hash === r.champion ? ' ★' : ''}</td><td><span class="badge ${tone(t.state)}">${esc(t.state)}</span></td>
+    <td>${esc(t.stage || '')}</td><td>${esc(t.cell || '')}</td><td class="n">${t.n_holes ?? '–'}</td><td class="n">${fx(t.d_eq_mm, 2)}</td>
+    <td class="n">${fx(t.r_mean_over_R, 2)}</td><td class="n">${fx(t.surrogate, 4)}</td><td class="n">${fx(t.loss, 4)}</td>
+    <td class="n">${fx(t.min006, 3)}</td><td class="n">${fx(t.min010, 3)}</td><td class="n">${fx(t.kpi_dev, 2)}</td></tr>`).join('');
+  const rounds = r.rounds.length ? r.rounds.map(x => `第 ${x.round} 轮：提议 ${x.proposed}，送 CFD ${(x.picked || []).join(', ') || '无'}`).join('<br>') : '还没有搜索轮次';
+  return `<div class="kpis" style="margin-bottom:10px">
+      <div class="kpi"><span>对照（211 孔）</span><b style="font-size:14px">${esc(ctl)}</b></div>
+      <div class="kpi"><span>冠军</span><b style="font-size:14px">${esc(r.champion || '–')}</b></div>
+      <div class="kpi"><span>试验数</span><b>${r.trials.length}</b></div>
+      <div class="kpi"><span>MAP-Elites 格</span><b>${Object.keys(r.cells).length}</b></div>
+      <div class="kpi"><span>原文目标 Z=0.06 min/壁</span><b>0.487</b></div>
+    </div>
+    <div class="tbl"><table><thead><tr><th>候选</th><th>状态</th><th>阶段</th><th>格</th><th>孔数</th><th>d mm</th><th>r/R</th><th>代理</th><th>loss</th><th>min 0.06</th><th>min 0.1</th><th>KPI 偏差 %</th></tr></thead>
+    <tbody>${rows || '<tr><td colspan="12" class="muted">无</td></tr>'}</tbody></table></div>
+    <p class="muted" style="margin:8px 0 4px">${rounds}</p>
+    ${r.chainTail ? `<pre>${esc(r.chainTail)}</pre>` : ''}`;
+}
+
+function taskView(ts) {
+  if (!ts.length) return '<span class="muted">没有任务</span>';
+  return ts.map(t => `<div style="margin-bottom:10px">
+    <div class="top" style="display:flex;gap:8px;align-items:baseline"><b>${esc(t.title || t.id)}</b>
+      ${t.running ? '<span class="badge ok">执行中</span>' : '<span class="badge">空闲</span>'}
+      ${t.autoMode ? '<span class="badge info">自动</span>' : ''}${t.awaitingApproval ? '<span class="badge warn">待审批</span>' : ''}
+      <span class="muted" style="margin-left:auto">${t.updatedAt ? ago(t.updatedAt) : ''}</span></div>
+    ${t.recent.map(m => `<div class="msg"><span class="r">${esc(m.role)}</span><span>${esc(m.text)}${m.tools.length ? ` <span class="tool">${esc(m.tools.join(', '))}</span>` : ''}</span></div>`).join('')}
+  </div>`).join('');
+}
+
+let fails = 0, last = 0;
+async function tick() {
+  try {
+    const r = await fetch('/api/monitor', { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json(); fails = 0; last = Date.now();
+    const memUsed = 1 - d.mem.free / d.mem.total;
+    $('machine').innerHTML = [
+      ['主机', d.host], ['求解占用核', `${d.busyCores} / ${d.cpus}`], ['负载 1/5/15', d.load.map(x => x.toFixed(0)).join(' / ')],
+      ['内存', (100 * memUsed).toFixed(0) + ' %'], ['活动作业', d.jobs.length]
+    ].map(([k, v]) => `<div class="kpi"><span>${k}</span><b>${esc(v)}</b></div>`).join('');
+    $('jobs').innerHTML = d.jobs.length ? d.jobs.map(jobCard).join('') : '<span class="muted">没有在跑的求解</span>';
+    $('rsi').innerHTML = rsiView(d.rsi);
+    $('tasks').innerHTML = taskView(d.tasks || []);
+  } catch (e) { fails++; $('stamp').innerHTML = `<span class="err">刷新失败：${esc(e.message)}</span>`; }
+  paint();
+}
+function paint() {
+  if (!last) return;
+  const s = (Date.now() - last) / 1000;
+  $('live').className = 'dot' + (fails >= 3 ? ' down' : s > 40 ? ' stale' : '');
+  if (!fails) $('stamp').textContent = `${Math.round(s)} s 前更新 · 每 15 s 刷新`;
+}
+tick(); setInterval(tick, 15000); setInterval(paint, 1000);
+</script>
+</body>
+</html>

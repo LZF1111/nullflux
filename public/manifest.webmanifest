@@ -1,0 +1,14 @@
+{
+  "name": "CFDriver",
+  "short_name": "CFDriver",
+  "description": "面向反应器复现、评估与优化的 CFD 智能体",
+  "start_url": "/app",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "lang": "zh-CN",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

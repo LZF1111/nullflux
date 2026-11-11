@@ -1,0 +1,47 @@
+# in.reaxff — ReaxFF 反应力场骨架（热解/燃烧/氧化，NVT）
+# 运行: lmp -in in.reaxff   (需 LAMMPS 编入 REAXFF 包)
+# 势文件 ffield.reax.CHON 放 case 目录; 元素列 C H O N 顺序=data 的 atom type 1..4
+# 新版 LAMMPS 用 reaxff/qeq/reaxff; 老版本换成 reax/c / qeq/reax
+
+# ---------- 1) 初始化 ----------
+units           real                 # 长度 Å, 能量 kcal/mol, 时间 fs
+atom_style      charge               # 带电荷; data 不含 Bonds 段
+dimension       3
+boundary        p p p
+
+# ---------- 2) 读构型 ----------
+read_data       data.system          # 若初始重叠严重, 先跑 soft pushoff 生成 data.relaxed
+
+# ---------- 3) ReaxFF 力场 ----------
+pair_style      reaxff NULL
+pair_coeff      * * ffield.reax.CHON C H O N
+neighbor        2.0 bin
+neigh_modify    delay 0 every 1 check no
+
+# 电荷平衡（必需）
+fix             qeq all qeq/reaxff 1 0.0 10.0 1e-6 reaxff
+# 物种演化分析（可选）
+fix             sp all reaxff/species 1 10 100 species.out
+
+# ---------- 4) 预松弛消重叠 ----------
+min_style       cg
+minimize        1.0e-4 1.0e-6 1000 10000
+reset_timestep  0
+velocity        all create 300.0 4928459 mom yes rot yes dist gaussian
+timestep        0.1                  # warmup 保守 0.1 fs
+fix             warm all nve/limit 0.1
+thermo          100
+run             5000
+unfix           warm
+
+# ---------- 5) 生产 NVT ----------
+timestep        0.25                 # ReaxFF 上限 ~0.25 fs
+fix             1 all nvt temp 300 300 100.0     # real 单位 Tdamp~100 fs
+thermo          100
+thermo_style    custom step temp pe ke etotal press
+dump            1 all custom 1000 dump.reax id type q x y z
+dump_modify     1 sort id
+
+# ---------- 6) 运行 ----------
+run             100000
+write_data      data.final

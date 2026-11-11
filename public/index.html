@@ -1,0 +1,536 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0d0d0f" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="CFDriver" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/icon.svg" />
+  <title>CFDriver</title>
+  <link rel="stylesheet" href="/style.css?v=102" />
+  <link rel="stylesheet" href="/features.css?v=102" />
+  <link rel="stylesheet" href="/viewer.css?v=102" />
+  <link rel="stylesheet" href="/devcards.css?v=102" />
+  <link rel="stylesheet" href="/settings.css?v=102" />
+  <script>try { const p = JSON.parse(localStorage.getItem('cfd.prefs') || '{}'); if (p.themeV !== 2) { p.theme = 'dark'; p.themeV = 2; localStorage.setItem('cfd.prefs', JSON.stringify(p)); } if (p.theme !== 'light') document.documentElement.dataset.theme = 'dark'; } catch { document.documentElement.dataset.theme = 'dark'; }</script>
+  <link rel="stylesheet" data-name="vs/editor/editor.main"
+        href="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/editor/editor.main.css" />
+  <link rel="stylesheet" href="/vendor/katex.min.css" />
+  <!-- three.js ESM importmap：STLLoader / OrbitControls 内部 import 'three' / 'three/addons/...' 需要这个解析 -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/": "https://cdn.jsdelivr.net/npm/three@0.160.0/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <svg class="icon-sprite" aria-hidden="true" focusable="false" width="0" height="0" style="position:absolute;width:0;height:0;overflow:hidden">
+    <defs>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+      <symbol id="i-compose" viewBox="0 0 24 24"><path d="M12 20h8"/><path d="M16.5 3.6a2.1 2.1 0 0 1 3 3L8 18.1l-4 1 1-4Z"/></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></symbol>
+      <symbol id="i-sidebar" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="M9 4.5v15"/></symbol>
+      <symbol id="i-panel" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="M15 4.5v15"/></symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></symbol>
+      <symbol id="i-clip" viewBox="0 0 24 24"><path d="m20.5 11.5-8.3 8.3a5.3 5.3 0 0 1-7.5-7.5l8.3-8.3a3.5 3.5 0 0 1 5 5l-8.3 8.3a1.8 1.8 0 0 1-2.5-2.5l7.6-7.6"/></symbol>
+      <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><circle cx="9" cy="10" r="1.6"/><path d="m21 15.5-4.8-4.8L7 19.5"/></symbol>
+      <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol>
+      <symbol id="i-stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" stroke="none"/></symbol>
+      <symbol id="i-terminal" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="m7 9.5 3 2.5-3 2.5M13 15h4"/></symbol>
+      <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/></symbol>
+      <symbol id="i-edit" viewBox="0 0 24 24"><path d="M16.5 3.6a2.1 2.1 0 0 1 3 3L8 18.1l-4 1 1-4Z"/><path d="m14.5 5.5 3 3"/></symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/></symbol>
+      <symbol id="i-cube" viewBox="0 0 24 24"><path d="m12 3 8 4.5v9L12 21l-8-4.5v-9Z"/><path d="m4 7.5 8 4.5 8-4.5M12 12v9"/></symbol>
+      <symbol id="i-activity" viewBox="0 0 24 24"><path d="M3 12h4l3-7 4 14 3-7h4"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+      <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+      <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h8"/></symbol>
+      <symbol id="i-fork" viewBox="0 0 24 24"><circle cx="6" cy="5" r="2"/><circle cx="18" cy="5" r="2"/><circle cx="12" cy="19" r="2"/><path d="M6 7v2a4 4 0 0 0 4 4h4a4 4 0 0 0 4-4V7M12 13v4"/></symbol>
+      <symbol id="i-keyboard" viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/></symbol>
+      <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+      <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+      <symbol id="i-expand" viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></symbol>
+      <symbol id="i-collapse" viewBox="0 0 24 24"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></symbol>
+      <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5.5" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="18.5" cy="12" r="1.3" fill="currentColor" stroke="none"/></symbol>
+      <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v7a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 16.5Z"/></symbol>
+      <symbol id="i-layout" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="2.5"/><path d="M3 10h18M10 10v9.5"/></symbol>
+      <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.4 2.6 3.6 5.6 3.6 9s-1.2 6.4-3.6 9c-2.4-2.6-3.6-5.6-3.6-9S9.6 5.6 12 3Z"/></symbol>
+      <symbol id="i-list" viewBox="0 0 24 24"><path d="M10 6h10M10 12h10M10 18h10"/><path d="m3.5 6 1.2 1.2L7 5M3.5 12l1.2 1.2L7 11M3.5 18l1.2 1.2L7 17"/></symbol>
+      <symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 4v16h16"/><path d="m7.5 14.5 3.5-4 3 3 5-6"/></symbol>
+      <symbol id="i-wind" viewBox="0 0 24 24"><path d="M3 8.5h10.5a2.8 2.8 0 1 0-2.8-2.8M3 12.5h15a2.8 2.8 0 1 1-2.8 2.8M3 16.5h7"/></symbol>
+      <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="2.8"/></symbol>
+      <symbol id="i-book" viewBox="0 0 24 24"><path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5Zm0 15A1.5 1.5 0 0 0 6.5 21H19"/></symbol>
+      <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/></symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.3-4.9L4 8M4 4v4h4M4 13a8 8 0 0 0 14.3 4.9L20 16M20 20v-4h-4"/></symbol>
+      <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></symbol>
+      <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/></symbol>
+      <symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3v5M15 3v5M7 8h10v3a5 5 0 0 1-10 0V8ZM12 16v5"/></symbol>
+      <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></symbol>
+      <symbol id="i-flag" viewBox="0 0 24 24"><path d="M5 21V4M5 4h11l-2 4 2 4H5"/></symbol>
+      <symbol id="i-dot" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2.5" fill="currentColor" stroke="none"/></symbol>
+    </defs>
+  </svg>
+
+  <aside id="sidebar" class="sidebar" aria-label="任务与工作区">
+    <div class="sb-top">
+      <div class="brand">CFDriver</div>
+      <button id="sidebar-collapse" class="icon-btn" type="button" title="收起侧栏（Ctrl+B）" aria-label="收起侧栏"><svg class="ico"><use href="#i-sidebar"/></svg></button>
+    </div>
+    <button id="task-new" class="sb-new" type="button" title="新建任务"><svg class="ico"><use href="#i-compose"/></svg><span>新任务</span></button>
+    <label class="sb-search"><svg class="ico"><use href="#i-search"/></svg><input id="task-search" type="search" placeholder="搜索任务" autocomplete="off" aria-label="搜索任务" /><kbd>Ctrl K</kbd></label>
+    <div class="sb-section"><span>任务</span><span id="task-count" class="sb-count"></span></div>
+    <div id="task-list" class="task-list" role="list" aria-label="任务列表"></div>
+    <select id="task-select" class="visually-hidden" tabindex="-1" aria-hidden="true"></select>
+    <div class="sb-foot">
+      <details class="file-menu">
+        <summary title="切换工作目录或打开文件"><svg class="ico"><use href="#i-folder"/></svg><span id="ws-name" class="ws-name">工作区</span><span id="ws-display" class="ws-display visually-hidden"></span><svg class="ico sm"><use href="#i-chevron-down"/></svg></summary>
+        <div class="file-menu-items">
+          <button id="open-folder" type="button" title="打开文件夹">打开文件夹…</button>
+          <button id="open-file" type="button" title="打开文件">打开文件…</button>
+        </div>
+      </details>
+      <div class="sb-foot-row">
+        <span class="grow"></span>
+        <button id="settings-btn" class="icon-btn" type="button" title="设置" aria-label="设置"><svg class="ico"><use href="#i-settings"/></svg></button>
+      </div>
+    </div>
+  </aside>
+  <div id="sidebar-resizer" class="sidebar-resizer" role="separator" aria-orientation="vertical" aria-label="拖动调整侧栏宽度" tabindex="0"></div>
+  <div id="sidebar-scrim" class="sidebar-scrim" hidden></div>
+  <div id="sidebar-peek-zone" class="sidebar-peek-zone" aria-hidden="true"></div>
+  <div id="toast-host" class="toast-host" aria-live="polite"></div>
+
+  <!-- 主区：线程 + 检查器（清爽模式为网格，手动模式为浮动面板） -->
+  <div id="desktop" class="desktop">
+    <div class="thread-head">
+      <button id="sidebar-toggle" class="icon-btn" type="button" title="显示侧栏（Ctrl+B）" aria-label="显示侧栏"><svg class="ico"><use href="#i-sidebar"/></svg></button>
+      <div class="th-title"><span id="conn-dot" class="conn-dot" data-state="ok" title="已连接"></span><h1 id="thread-title">新任务</h1><span id="thread-status" class="status-pill" data-state="idle">空闲</span></div>
+      <div class="th-actions">
+        <button id="goal-btn" class="icon-btn" type="button" title="会话目标与验收标准（/goal）" aria-label="设置会话目标"><svg class="ico"><use href="#i-activity"/></svg></button>
+        <button id="task-fork" class="icon-btn" type="button" title="分叉：复制当前上下文到新分支（/fork）" aria-label="分叉任务"><svg class="ico"><use href="#i-chart"/></svg></button>
+        <button id="inspector-toggle" class="icon-btn" type="button" title="检查器（Ctrl+I）" aria-label="显示或隐藏检查器" aria-pressed="true"><svg class="ico"><use href="#i-panel"/></svg></button>
+      </div>
+    </div>
+    <dialog id="goal-dlg" class="goal-dlg">
+      <form method="dialog">
+        <h3>会话目标</h3>
+        <p class="muted">智能体每轮结束会对照验收标准自检，未达成会继续推进（最多续推 3 次），达成后在 task_complete 里逐条给证据。</p>
+        <label>目标<textarea id="goal-in" rows="2" placeholder="例：复现论文 Fig.X 出口指标 / 完成参数优化"></textarea></label>
+        <label>验收标准（每行一条，尽量可量化）<textarea id="goal-crit-in" rows="4" placeholder="关键指标与参考值偏差 ≤ 10%&#10;连续 1 s 物理时间无 FATAL&#10;网格质量满足正交性 < 70°"></textarea></label>
+        <div class="goal-dlg-act"><button value="cancel" type="submit">取消</button><button id="goal-save" value="ok" type="submit" class="primary">保存</button></div>
+      </form>
+    </dialog>
+    <nav class="context-tabs" role="tablist" aria-label="检查器">
+      <button id="ctx-chat" type="button" data-context-view="chat" aria-selected="false" title="对话"><svg class="ico"><use href="#i-edit"/></svg><span>对话</span></button>
+      <button type="button" role="tab" data-context-view="status" aria-selected="true" title="运行：作业、计划、求解器、设计、终端"><svg class="ico"><use href="#i-activity"/></svg><span>运行</span></button>
+      <button type="button" role="tab" data-context-view="results" aria-selected="false" title="结果：产物、切片、几何、场"><svg class="ico"><use href="#i-image"/></svg><span>结果</span></button>
+      <button type="button" role="tab" data-context-view="files" aria-selected="false" title="文件"><svg class="ico"><use href="#i-folder"/></svg><span>文件</span></button>
+      <button type="button" role="tab" data-context-view="terminal" aria-selected="false" title="终端"><svg class="ico"><use href="#i-terminal"/></svg><span>终端</span></button>
+      <button type="button" role="tab" data-context-view="optimize" aria-selected="false" title="优化设计"><svg class="ico"><use href="#i-chart"/></svg><span>优化</span></button>
+      <button type="button" role="tab" data-context-view="post" aria-selected="false" title="可视化：切片、几何"><svg class="ico"><use href="#i-eye"/></svg><span>可视化</span></button>
+      <span class="grow"></span>
+      <button id="inspector-max" class="icon-btn" type="button" title="最大化检查器" aria-label="最大化检查器" aria-pressed="false"><svg class="ico"><use href="#i-expand"/></svg></button>
+      <button id="inspector-close" class="icon-btn" type="button" title="隐藏检查器" aria-label="隐藏检查器"><svg class="ico"><use href="#i-x"/></svg></button>
+    </nav>
+    <div id="ctx-sub" class="ctx-sub" role="toolbar" aria-label="子视图"></div>
+    <div id="inspector-resizer" class="inspector-resizer" role="separator" aria-orientation="vertical" aria-label="拖动调整检查器宽度" tabindex="0"></div>
+
+    <!-- 运行 › 作业 -->
+    <div class="panel" data-pid="live" data-default="left:256;top:8;width:760;height:440">
+      <div class="panel-head"><span class="ptitle">作业 <span id="live-stamp" class="small muted"></span></span>
+        <span class="pacts"><a class="mini" href="/monitor" target="_blank" rel="noopener" title="在新窗口打开完整监视页（含 RSI 档案）">新窗口</a><button class="mini" id="live-refresh" type="button">刷新</button></span>
+      </div>
+      <div class="panel-body live-body">
+        <div id="live-machine" class="live-kpis"></div>
+        <div id="live-jobs" class="live-jobs"><div class="muted small">读取中…</div></div>
+        <section class="live-case" aria-label="算例总览">
+          <div class="live-case-head"><b>算例总览</b><select id="ov-case" aria-label="选择算例"></select></div>
+          <div id="ov-body" class="ov-body"><div class="muted small">选择一个算例。</div></div>
+        </section>
+        <div id="live-rsi" class="live-rsi"></div>
+        <!-- 检查点（智能体执行 save_checkpoint 后出现） -->
+        <section id="live-checkpoints" class="live-checkpoints" hidden aria-label="检查点"></section>
+      </div>
+    </div>
+
+    <!-- 结果 › 切片 / 几何（内嵌 /post 与 /geometry） -->
+    <div class="panel" data-pid="slice" data-default="left:256;top:8;width:760;height:440">
+      <div class="panel-head"><span class="ptitle">可视化</span><span class="pacts"><a class="mini" id="slice-pop" href="/post" target="_blank" rel="noopener">新窗口</a></span></div>
+      <div class="panel-body embed-body"><iframe id="slice-frame" title="可视化" loading="lazy"></iframe></div>
+    </div>
+    <div class="panel" data-pid="geometry" data-default="left:256;top:8;width:760;height:440">
+      <div class="panel-head"><span class="ptitle">几何预览</span><span class="pacts"><a class="mini" id="geom-pop" href="/geometry" target="_blank" rel="noopener">新窗口</a></span></div>
+      <div class="panel-body embed-body"><iframe id="geom-frame" title="几何预览" loading="lazy"></iframe></div>
+    </div>
+
+    <!-- 文件树 -->
+    <div class="panel" data-pid="files" data-default="left:8;top:8;width:240;height:340">
+      <div class="panel-head"><span class="grip">⋮⋮</span><span class="ptitle">文件</span>
+        <span class="pacts"><button class="mini" id="refresh-tree" title="刷新文件树">刷新</button><button class="mini" id="new-file" title="新建文件">新建文件</button><button class="mini" id="new-folder" title="新建目录">新建目录</button></span>
+      </div>
+      <div id="tree" class="tree panel-body" style="overflow:auto;min-height:0;"></div>
+    </div>
+
+    <!-- 自动设计 -->
+    <div class="panel" data-pid="design" data-default="left:256;top:8;width:760;height:440" style="display:none;">
+      <div class="panel-head"><span class="grip">⋮⋮</span><span class="ptitle">自动设计</span>
+        <span class="pacts"><select id="design-study" aria-label="优化研究"><option value="">（无研究）</option></select><button class="mini" id="design-refresh" title="刷新">刷新</button></span>
+      </div>
+      <div id="design-body" class="design-body panel-body"><div class="muted small">尚无优化研究。让智能体用 opt_study_create 建立一个带固定流水线合同的研究。</div></div>
+    </div>
+
+    <!-- 计划 -->
+    <div class="panel" data-pid="todos" data-default="left:8;top:352;width:240;height:184">
+      <div class="panel-head"><span class="grip">⋮⋮</span><span class="ptitle">计划</span><span id="todo-summary" class="small muted"></span></div>
+      <div id="todos" class="todos panel-body"><div class="muted small">尚无任务</div></div>
+    </div>
+
+    <!-- 结果 › 产物（B1: 只显示 artifact 缩略图条，点击在独立文件查看器打开） -->
+    <div class="panel" data-pid="editor" data-default="left:256;top:8;width:760;height:440">
+      <div class="panel-head">
+        <span class="grip">⋮⋮</span>
+        <span class="ptitle">产物</span>
+      </div>
+      <div class="panel-body results-gallery">
+        <div id="artifact-strip" class="artifact-strip" hidden></div>
+        <div id="results-empty" class="editor-empty">
+          <div class="empty-state">
+            <svg class="ico lg"><use href="#i-image"/></svg>
+            <b>还没有结果</b>
+            <span>智能体生成的文件会作为缩略图显示在这里，点击可在文件查看器中打开。</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- B1: 文件查看器（独立浮动面板，从产物面板分离） -->
+    <div class="panel" data-pid="fileview" data-default="left:256;top:8;width:760;height:500" style="display:none;">
+      <div class="panel-head">
+        <span class="grip">⋮⋮</span>
+        <div id="tabs" class="tabs"></div>
+        <span class="pacts"><button class="mini" id="save-file" disabled title="Ctrl+S">保存</button></span>
+      </div>
+      <div id="editor" class="editor panel-body">
+        <div id="editor-host" class="editor-host"></div>
+        <div id="img-host" class="img-host" style="display:none;"></div>
+        <div id="stl-host" class="stl-host" style="display:none;position:relative;width:100%;height:100%;"></div>
+        <div id="vtu-host" class="vtu-host" style="display:none;position:relative;width:100%;height:100%;"></div>
+        <div id="pdf-host" class="pdf-host" style="display:none;position:relative;width:100%;height:100%;"></div>
+        <div id="editor-empty" class="editor-empty">
+          <div class="empty-state">
+            <svg class="ico lg"><use href="#i-file"/></svg>
+            <b>还没有打开的文件</b>
+            <span>从「产物」或「文件」面板点击文件即可在这里查看。</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 场可视化（pvpython 离屏渲染） -->
+    <div class="panel" data-pid="skills" data-default="left:632;top:470;width:392;height:392">
+      <div class="panel-head">
+        <span class="grip">⋮⋮</span>
+        <span class="ptitle">🧠 技能库 <span id="skill-count" class="small muted">0</span></span>
+        <span class="pacts">
+          <select id="skill-domain-filter" title="按领域过滤" style="font-size:10px;background:var(--bg2);border:1px solid var(--line2);color:var(--text);border-radius:3px;padding:2px 4px;">
+            <option value="">全部领域</option>
+            <option value="foam">foam</option>
+            <option value="mfix">mfix</option>
+            <option value="lbm">lbm</option>
+            <option value="general">general</option>
+          </select>
+          <button class="mini" id="skill-refresh" title="刷新技能库">刷新</button>
+        </span>
+      </div>
+      <div class="panel-body" id="skill-body" style="overflow:auto;padding:8px;font-size:11px;">
+        <div class="muted small" style="text-align:center;padding:16px;">加载中…</div>
+      </div>
+    </div>
+
+    <!-- 求解器监测面板 -->
+    <div class="panel" data-pid="solver-monitor" data-default="left:1024;top:380;width:380;height:228" style="display:none;">
+      <div class="panel-head">
+        <span class="grip">⋮⋮</span>
+        <span class="ptitle">求解器</span>
+        <span class="pacts"><span id="sm-live-count" class="small muted">无作业</span><span id="sm-status" class="sm-status small muted">空闲</span></span>
+      </div>
+      <div class="panel-body sm-body">
+        <div class="sm-runrow">
+          <select id="sm-run" aria-label="选择求解作业"><option value="">选择作业…</option></select>
+          <button class="mini" id="sm-refresh-runs" title="刷新作业列表" aria-label="刷新作业列表">刷新</button>
+          <button class="mini danger" id="sm-stop" title="终止当前作业">停止</button>
+        </div>
+        <div id="sm-summary" class="sm-summary small muted">未选择作业。</div>
+        <div id="sm-progress-wrap" class="sm-progress" style="display:none;">
+          <div class="sm-progress-meta">
+            <span id="sm-progress-label" class="small">进度</span>
+            <span id="sm-progress-eta" class="small muted">ETA -</span>
+          </div>
+          <div class="sm-progress-track"><div id="sm-progress-bar" class="sm-progress-bar"></div></div>
+        </div>
+        <canvas id="sm-resid-canvas" class="sm-resid-canvas" width="360" height="140" style="display:none;"></canvas>
+        <div id="sm-resid-legend" class="sm-resid-legend small" style="display:none;"></div>
+        <details class="monitor-details"><summary>快照演化</summary>
+        <div class="sm-snap-tools">
+          <button class="mini" id="sm-snap-now" title="立刻给当前算例拍一帧加入快照轴">拍快照</button>
+          <label class="small muted"><input type="checkbox" id="sm-snap-auto" /> 每 <input id="sm-snap-every" type="number" min="5" max="600" value="30" aria-label="自动快照间隔（秒）" /> 秒自动</label>
+          <input id="sm-snap-field" type="text" placeholder="场=U" value="U" aria-label="快照场" />
+          <button class="mini" id="sm-snap-clear" title="清空快照轴">清空</button>
+        </div>
+        <div id="sm-snap-strip" class="sm-snap-strip"><div class="muted small" style="padding:8px;">求解过程中拍快照或开启自动快照，点缩略图放大对比。</div></div>
+        </details>
+        <details class="monitor-details"><summary>刷新设置</summary>
+        <div class="sm-interval-row">
+          <span class="small muted">间隔</span>
+          <input id="sm-interval" type="range" min="2" max="30" value="5" aria-label="刷新间隔" />
+          <span id="sm-interval-text" class="small">5s</span>
+          <label class="small muted"><input type="checkbox" id="sm-auto" checked /> 自动刷新</label>
+        </div>
+        </details>
+        <div id="sm-tail" class="sm-tail">(等待数据)</div>
+      </div>
+    </div>
+
+    <!-- 终端（交互式） -->
+    <div class="panel" data-pid="terminal" data-default="left:256;top:452;width:760;height:200">
+      <div class="panel-head">
+        <span class="grip">⋮⋮</span>
+        <span class="ptitle">终端 <span id="shell-name" class="small muted"></span></span>
+        <span class="pacts"><button class="mini" id="clear-term">清空</button><button class="mini" id="kill-shell" title="重启 shell">↻</button></span>
+      </div>
+      <div class="term-wrap panel-body">
+        <div id="terminal" class="terminal"></div>
+        <div class="term-input-row">
+          <span id="term-prompt">$</span>
+          <input type="text" id="term-input" placeholder="输入命令并回车（cmd / bash）" autocomplete="off" />
+        </div>
+      </div>
+    </div>
+
+    <!-- 对话 -->
+    <div class="panel" data-pid="chat" data-default="left:1024;top:8;width:380;height:596">
+      <div class="panel-head"><span class="grip">⋮⋮</span><span class="ptitle">对话</span></div>
+      <div class="chat-body panel-body">
+        <div id="goal-bar" class="goal-bar" hidden>
+          <span class="goal-tag" id="goal-state">目标</span>
+          <div class="goal-text"><b id="goal-text"></b><small id="goal-crit"></small></div>
+          <button id="goal-edit" class="goal-act" type="button">编辑</button>
+          <button id="goal-clear" class="goal-act" type="button">清除</button>
+        </div>
+        <div class="pending-bar" id="pending-bar" style="display:none;">
+          <div class="pending-head"><span><b id="pending-count">0</b> 处文件改动待审阅</span>
+            <span><button class="mini ok" id="keep-all">全部保留</button><button class="mini no" id="undo-all">全部撤销</button></span>
+          </div>
+          <div id="pending-list"></div>
+        </div>
+        <div id="chat" class="chat"></div>
+        <!-- D2: TodoPill — composer 上方活动待办计数 -->
+        <div id="todo-pill" class="todo-pill" style="display:none;" role="status" aria-live="polite"></div>
+        <div class="input-wrap composer">
+          <div id="active-file-chip" class="active-file-chip" style="display:none;">
+            <label><input type="checkbox" id="active-file-toggle" /> 附带当前文件 <span id="active-file-name"></span></label>
+          </div>
+          <div id="attachments" class="attachments"></div>
+          <div class="input-row">
+            <textarea id="input" aria-label="任务指令" placeholder="描述目标，或添加论文、算例与数据…" rows="2"></textarea>
+            <div id="mention-pop" class="mention-pop" style="display:none;"></div>
+          </div>
+          <div class="input-toolbar">
+            <button class="icon-btn" id="attach-file" type="button" title="添加文件（论文、算例、数据）" aria-label="添加文件"><svg class="ico"><use href="#i-clip"/></svg></button>
+            <button class="icon-btn" id="attach-image" type="button" title="添加图片" aria-label="添加图片"><svg class="ico"><use href="#i-image"/></svg></button>
+            <input type="file" id="file-picker" multiple style="display:none;" />
+            <input type="file" id="image-picker" accept="image/*" multiple style="display:none;" />
+            <div class="mode-seg" role="radiogroup" aria-label="智能体模式（Tab 切换）" title="规划：只读调研出方案；执行：全部工具（输入框内按 Tab 切换）">
+              <button type="button" role="radio" data-mode="plan" aria-checked="false">规划</button>
+              <button type="button" role="radio" data-mode="build" aria-checked="true">执行</button>
+            </div>
+            <label class="toggle autonomy" title="自主执行：智能体可直接运行工具和命令；逐步确认：每个有副作用的操作先征求你的同意"><input type="checkbox" id="auto-mode" disabled role="switch" /><span class="auto-on">自主执行</span><span class="auto-off">逐步确认</span></label>
+            <button id="model-picker" class="model-chip" type="button" title="切换模型 / 配置 API"><span id="model-label">未配置</span><svg class="chip-ctx-ring" viewBox="0 0 16 16" aria-hidden="true"><circle class="ctx-bg" cx="8" cy="8" r="6"/><circle class="ctx-fg" id="chip-ctx-fg" cx="8" cy="8" r="6" stroke-dasharray="0 38"/></svg><svg class="ico sm"><use href="#i-chevron-down"/></svg></button>
+            <span class="grow"></span>
+            <div id="ctx-meter" class="ctx-meter" title="上下文用量（超限自动压缩）" role="meter" aria-label="上下文用量" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span class="ctx-ring"><svg viewBox="0 0 36 36"><circle class="ctx-bg" cx="18" cy="18" r="15"/><circle class="ctx-fg" id="ctx-fg" cx="18" cy="18" r="15" stroke-dasharray="0 100"/></svg></span><span id="ctx-pct">0%</span></div>
+            <button id="stop" class="stop-btn" type="button" disabled title="停止智能体（后台求解器继续运行）" aria-label="停止智能体"><svg class="ico"><use href="#i-stop"/></svg></button>
+            <button id="kill-all" class="kill-btn" type="button" title="强行终止：智能体、后台求解器与终端全部结束">全部终止</button>
+            <button id="send" class="send-btn" type="button" title="发送（Enter）" aria-label="发送" data-mode="send"><svg class="ico"><use href="#i-arrow-up"/></svg></button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Python 环境选择 -->
+  <div id="py-modal" class="modal" style="display:none;">
+    <div class="modal-box small">
+          <div class="modal-head"><span>选择 Python 解释器</span><button class="mini" id="py-close">×</button></div>
+      <div class="py-body">
+        <div class="py-toolbar">
+            <button class="mini" id="py-refresh">重新扫描</button>
+            <button class="mini" id="py-browse">手动选择 python…</button>
+          <button class="mini no" id="py-clear">清除</button>
+        </div>
+        <div id="py-list" class="py-list"><div class="muted small" style="padding:20px;text-align:center;">扫描中…</div></div>
+      </div>
+      <div class="modal-actions"><button class="no" id="py-cancel">关闭</button></div>
+    </div>
+  </div>
+
+  <!-- 模型选择器 — OpenChamber 风格紧凑弹出 -->
+  <div id="model-modal" class="mp-popup" style="display:none;" role="dialog" aria-label="切换模型">
+    <div class="mp-wrap">
+      <div class="mp-search-row">
+        <svg class="ico sm mp-search-ico" aria-hidden="true"><use href="#i-search"/></svg>
+        <input id="mp-search" class="mp-search-input" placeholder="搜索模型…" autocomplete="off" spellcheck="false" />
+        <button class="mini" id="model-close" aria-label="关闭">×</button>
+      </div>
+      <div id="mp-list" class="mp-list" role="listbox" aria-label="可用模型"></div>
+      <div class="mp-footer">
+        <button type="button" class="mp-link" id="mp-custom-toggle">✏️ 自定义连接</button>
+        <button type="button" class="mp-link" id="mp-copilot-toggle">🐙 GitHub Copilot</button>
+      </div>
+      <!-- 自定义连接折叠区 -->
+      <div id="mp-custom-form" class="mp-custom-form" style="display:none">
+        <div class="mp-cf-row">
+          <label class="mp-cf-label" for="sf-baseurl">接口地址</label>
+          <input id="sf-baseurl" type="text" class="mp-cf-input" placeholder="https://api.example.com/v1" />
+        </div>
+        <div class="mp-cf-row">
+          <label class="mp-cf-label" for="sf-model">模型 ID</label>
+          <input id="sf-model" type="text" class="mp-cf-input" placeholder="claude-opus-5-5" />
+        </div>
+        <div class="mp-cf-row">
+          <label class="mp-cf-label" for="sf-apikey">API Key</label>
+          <input id="sf-apikey" type="password" class="mp-cf-input" placeholder="留空保留已保存的密钥" />
+        </div>
+        <button class="mini ok mp-cf-save" id="sf-apply">保存连接</button>
+        <details class="mp-vlm-detail">
+          <summary>独立视觉模型设置</summary>
+          <div class="mp-cf-row"><label class="mp-cf-label" for="vlm-baseurl">视觉接口</label><input id="vlm-baseurl" type="text" class="mp-cf-input" placeholder="留空继承" /></div>
+          <div class="mp-cf-row"><label class="mp-cf-label" for="vlm-model">视觉模型 ID</label><input id="vlm-model" type="text" class="mp-cf-input" placeholder="留空继承" /></div>
+          <div class="mp-cf-row"><label class="mp-cf-label" for="vlm-apikey">视觉 API Key</label><input id="vlm-apikey" type="password" class="mp-cf-input" placeholder="留空继承" /></div>
+          <button class="mini mp-cf-save" id="vlm-apply">保存视觉设置</button>
+        </details>
+      </div>
+      <!-- GitHub Copilot 折叠区 -->
+      <div id="mp-copilot-form" class="mp-custom-form" style="display:none">
+        <div id="cp-loggedout" class="cp-section" style="display:none;">
+          <button class="mini ok" id="cp-login">使用 GitHub 账号登录 Copilot</button>
+          <div id="cp-device" style="display:none;margin-top:10px;padding:10px;background:rgba(124,58,237,.08);border:1px solid rgba(124,58,237,.3);border-radius:6px;">
+            <div class="small">1. 打开：<a id="cp-uri" href="#" target="_blank" style="color:#a78bfa"></a></div>
+            <div class="small" style="margin-top:6px;">2. 输入设备码：<code id="cp-code" style="letter-spacing:2px;font-size:14px;"></code> <button class="mini" id="cp-copy">复制</button></div>
+            <div id="cp-poll-status" class="muted small" style="margin-top:8px;"></div>
+            <div style="margin-top:8px;display:flex;gap:6px;">
+              <button class="mini ok" id="cp-recheck">我已授权，立即检查</button>
+              <button class="mini no" id="cp-cancel">取消</button>
+            </div>
+          </div>
+        </div>
+        <div id="cp-loggedin" class="cp-section" style="display:none;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+            <span class="small">✅ 已登录 GitHub Copilot</span>
+            <button class="mini" id="cp-refresh">刷新</button>
+            <button class="mini no" id="cp-logout">退出</button>
+          </div>
+          <div id="cp-models" class="mp-list" style="max-height:200px;border-top:1px solid var(--line);padding-top:4px;"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="mp-backdrop" style="display:none;position:fixed;inset:0;z-index:1199;" aria-hidden="true"></div>
+
+  <!-- 工具开关 -->
+  <div id="tools-modal" class="modal" style="display:none;">
+    <div class="modal-box small">
+          <div class="modal-head"><span>选择智能体可用工具</span><button class="mini" id="tools-close">×</button></div>
+      <div class="py-body">
+        <div class="muted small" style="margin-bottom:10px;">勾选后立刻生效，发给模型的工具列表会随之变化。<b>编辑/读写类</b>始终开启。</div>
+        <div id="tools-list"></div>
+      </div>
+      <div class="modal-actions"><button class="no" id="tools-cancel">关闭</button></div>
+    </div>
+  </div>
+
+  <!-- Diff 弹窗 -->
+  <div id="diff-modal" class="modal" style="display:none;">
+    <div class="modal-box">
+      <div class="modal-head"><span id="diff-title">差异预览</span><button class="mini" id="diff-close">×</button></div>
+      <div id="diff-editor" class="diff-editor"></div>
+      <div class="modal-actions"><button class="ok" id="diff-keep">✓ Keep</button><button class="no" id="diff-undo">↶ Undo</button></div>
+    </div>
+  </div>
+
+  <!-- 文件夹选择 -->
+  <div id="picker-modal" class="modal" style="display:none;">
+    <div class="modal-box small">
+      <div class="modal-head"><span id="picker-title">选择文件夹</span><button class="mini" id="picker-close">×</button></div>
+      <div class="picker-path">
+        <button class="mini" id="picker-up">⬆</button>
+        <input type="text" id="picker-cwd" />
+        <button class="mini" id="picker-go">→</button>
+      </div>
+      <div id="picker-list" class="picker-list"></div>
+      <div class="modal-actions">
+        <button class="ok" id="picker-pick">✓ 选择此处</button>
+        <button class="no" id="picker-cancel">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 设置：左侧分区导航 + 右侧内容（对齐 OpenChamber 设置页）。内容由 settings.js 渲染；模型连接、Python、工具开关复用原有控件 -->
+  <div id="settings-modal" class="modal st-modal" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="st-title">
+    <div class="st-box">
+      <nav class="st-nav" aria-label="设置分区">
+        <div class="st-title" id="st-title">设置</div>
+        <!-- D4: 设置面板搜索 -->
+        <input type="search" id="st-search" class="st-search" placeholder="搜索设置…" aria-label="搜索设置" autocomplete="off" spellcheck="false">
+        <button type="button" data-st="general" aria-current="page"><svg class="ico sm"><use href="#i-settings"/></svg>通用</button>
+        <button type="button" data-st="appearance"><svg class="ico sm"><use href="#i-layout"/></svg>外观</button>
+        <button type="button" data-st="keybinds"><svg class="ico sm"><use href="#i-keyboard"/></svg>快捷键</button>
+        <button type="button" data-st="models"><svg class="ico sm"><use href="#i-spark"/></svg>模型与 API</button>
+        <button type="button" data-st="agent"><svg class="ico sm"><use href="#i-terminal"/></svg>智能体</button>
+        <button type="button" data-st="skills"><svg class="ico sm"><use href="#i-book"/></svg>技能包</button>
+        <button type="button" data-st="mcp"><svg class="ico sm"><use href="#i-plug"/></svg>MCP 服务</button>
+        <button type="button" data-st="env"><svg class="ico sm"><use href="#i-cube"/></svg>求解器环境</button>
+        <button type="button" data-st="about"><svg class="ico sm"><use href="#i-info"/></svg>关于</button>
+      </nav>
+      <section class="st-main">
+        <header class="st-head"><h2 id="st-section-title">通用</h2><button class="icon-btn" id="settings-close" type="button" aria-label="关闭设置" title="关闭（Esc）">×</button></header>
+        <div class="st-body" id="st-body"></div>
+        <!-- 智能体分区里用到的原有按钮（快捷命令 /py、/tools、/digitize 也会点它们） -->
+        <div class="st-agent-btns" hidden>
+          <button id="py-picker" class="mini" type="button">Python <span id="py-label">未选择</span></button>
+          <button id="tools-btn" class="mini" type="button">工具开关</button>
+          <button id="digitize-btn" class="mini" type="button">图表取点</button>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- 命令面板 (Ctrl+Shift+P) -->
+  <div id="cmd-palette" class="cmd-palette" style="display:none;" role="dialog" aria-modal="true" aria-label="命令面板">
+    <div class="cmd-palette-overlay" id="cmd-overlay"></div>
+    <div class="cmd-palette-box">
+      <div class="cmd-palette-input-wrap">
+        <svg class="ico"><use href="#i-search"/></svg>
+        <input id="cmd-input" type="text" placeholder="搜索命令…" autocomplete="off" aria-label="搜索命令" />
+        <kbd>Esc</kbd>
+      </div>
+      <div id="cmd-list" class="cmd-list" role="listbox" aria-label="命令列表"></div>
+      <div class="cmd-palette-hint"><span><kbd>↑</kbd><kbd>↓</kbd> 选择</span><span><kbd>↵</kbd> 执行</span><span><kbd>Esc</kbd> 关闭</span></div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
+  <script src="/app.js?v=102"></script>
+<script src="/features.js?v=102"></script>
+  <script src="/viewer.js?v=102"></script>
+  <script src="/devcards.js?v=102"></script>
+  <script src="/settings.js?v=102"></script>
+  <script src="/multirun.js?v=102"></script>
+</body>
+</html>
