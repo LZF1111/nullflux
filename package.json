@@ -1,7 +1,7 @@
 {
   "name": "cfdriver",
   "displayName": "CFDriver",
-  "version": "10.0.0",
+  "version": "10.1.0",
   "author": "Zifeng Li <lizifeng@ipe.ac.cn>",
   "description": "CFDriver: an agent workbench for multiphase CFD (OpenFOAM / MFIX / LBM / DEM) with paper-reproduction checks and unattended long runs",
   "type": "module",
