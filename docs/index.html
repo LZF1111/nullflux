@@ -3,69 +3,17 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>CFDriver · AI CFD Agent — 本地 AI 仿真工程师 / OpenFOAM AI 助手</title>
-<meta name="description" content="CFDriver 是一款本地部署的 AI CFD Agent / AI 仿真工程师。读论文、建网格、跑 OpenFOAM / MFIX / LBM / SU2 等开源流体力学软件、调 ParaView、判收敛，还能为你从零开发未知求解器。支持 DeepSeek、Kimi、Qwen、GLM、Claude、GPT 等任意大模型，是 Codex / Claude Code 在科学计算与 CFD 仿真场景下的专业替代。">
-<meta name="keywords" content="AI CFD, AI for CFD, AI 仿真, AI 仿真工程师, CFD AI Agent, OpenFOAM AI, OpenFOAM Copilot, AI CAE, AI 求解器开发, LLM CFD, DeepSeek CFD, Claude Code 替代, Codex 替代, Cursor for CFD, 计算流体力学 AI, MFIX, LBM, SU2, ParaView, 论文复现, 仿真自动化, scientific computing agent, CFDriver, LZF">
-<meta name="author" content="LZF">
-<meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large">
-<meta name="theme-color" content="#0066cc">
+<title>CFDriver · 开源多相流 CFD 智能体工作台</title>
+<meta name="description" content="CFDriver：开源的多相流 CFD 智能体工作台。用大模型驱动 OpenFOAM / MFIX / LBM / DEM 的建模、求解、监控与后处理，重点是可审计的论文复现和无人值守的长时间计算。Apache-2.0。">
+<meta name="keywords" content="CFD, AI agent, OpenFOAM, MFIX, multiphase flow, fluidized bed, paper reproduction, LLM, 计算流体力学, 多相流, 论文复现">
+<meta name="author" content="Zifeng Li">
 <link rel="canonical" href="https://lzf1111.github.io/nullflux/">
-<meta property="og:site_name" content="CFDriver">
-<meta property="og:title" content="CFDriver · AI CFD Agent — 本地 AI 仿真工程师 / OpenFOAM AI 助手">
-<meta property="og:description" content="本地部署的 AI CFD Agent。读论文、建网格、跑 OpenFOAM / MFIX / LBM / SU2，调 ParaView，并能从零开发未知求解器。支持 DeepSeek / Kimi / Qwen / Claude / GPT 等任意大模型。">
+<meta property="og:title" content="CFDriver · 开源多相流 CFD 智能体工作台">
+<meta property="og:description" content="CFDriver：开源的多相流 CFD 智能体工作台。用大模型驱动 OpenFOAM / MFIX / LBM / DEM 的建模、求解、监控与后处理，重点是可审计的论文复现和无人值守的长时间计算。Apache-2.0。">
 <meta property="og:image" content="https://lzf1111.github.io/nullflux/screenshot-main.png">
 <meta property="og:url" content="https://lzf1111.github.io/nullflux/">
 <meta property="og:type" content="website">
-<meta property="og:locale" content="zh_CN">
-<meta property="og:locale:alternate" content="en_US">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="CFDriver · AI CFD Agent — 本地 AI 仿真工程师">
-<meta name="twitter:description" content="读论文 · 建网格 · 跑 OpenFOAM / MFIX / LBM / SU2 · 调 ParaView · 从零开发未知求解器。AI for CFD 的专业方案。">
-<meta name="twitter:image" content="https://lzf1111.github.io/nullflux/screenshot-main.png">
-<script type="application/ld+json">
-{
-  "@context": "https://schema.org",
-  "@graph": [
-    {
-      "@type": "SoftwareApplication",
-      "name": "CFDriver",
-      "alternateName": ["CFDriver AI CFD Agent", "CFDriver 仿真工程专家"],
-      "description": "本地部署的 AI CFD Agent / AI 仿真工程师。读论文、建网格、跑 OpenFOAM / MFIX / LBM / SU2 等开源流体力学软件、调 ParaView，并能从零开发未知求解器。",
-      "applicationCategory": "ScientificApplication",
-      "applicationSubCategory": "Computational Fluid Dynamics",
-      "operatingSystem": "Linux x86_64 (WSL2 on Windows)",
-      "softwareVersion": "0.7.2",
-      "downloadUrl": "https://github.com/LZF1111/nullflux/releases/latest",
-      "url": "https://lzf1111.github.io/nullflux/",
-      "author": {"@type": "Person", "name": "LZF", "url": "https://github.com/LZF1111"},
-      "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"},
-      "keywords": "AI CFD, AI for CFD, AI 仿真, OpenFOAM AI Agent, AI 求解器开发, LLM CFD, DeepSeek CFD, Claude Code 替代, Codex 替代",
-      "featureList": [
-        "AI 驱动 OpenFOAM / MFIX / LBM / SU2 等开源 CFD 软件全流程",
-        "未知求解器从零开发（方程推导 → C++ 实现 → MMS 验证）",
-        "VLM 视觉核验闭环：自动检查 STL、网格、云图、残差",
-        "9 层 BLAME LADDER 报错排查",
-        "论文参数宪法锁，防止越改越漂移",
-        "任意大模型接入：DeepSeek / Kimi / Qwen / GLM / Claude / GPT / vLLM",
-        "本地运行，数据不出工作站"
-      ]
-    },
-    {
-      "@type": "FAQPage",
-      "mainEntity": [
-        {"@type": "Question", "name": "什么是 AI CFD Agent？CFDriver 和 Cursor / Codex / Claude Code 有什么区别？",
-         "acceptedAnswer": {"@type": "Answer", "text": "通用 coding agent 只能写代码，不懂 CFD 工程纪律。CFDriver 是为计算流体力学量身设计的 AI 仿真工程师：内置 7 阶段工作流、视觉核验闭环、9 层报错阶梯、论文参数宪法锁，并能直接驱动 OpenFOAM、MFIX、LBM、SU2、ParaView，还能为未知方程从零开发新求解器。"}},
-        {"@type": "Question", "name": "CFDriver 支持哪些大模型？必须用国产模型吗？",
-         "acceptedAnswer": {"@type": "Answer", "text": "任意大模型都可接入：OpenAI、Anthropic Claude、Google Gemini、DeepSeek、Kimi、Qwen、GLM、智谱，以及本地 vLLM / Ollama / LM Studio。国产模型不是限制，而是性价比推荐：在 CFDriver 的中文工程协议下，DeepSeek / Kimi 等在 CFD 仿真任务上的稳定性与正确率常常优于通用大模型，而 token 成本仅为 5–10%。"}},
-        {"@type": "Question", "name": "AI 能为 OpenFOAM 写新求解器吗？",
-         "acceptedAnswer": {"@type": "Answer", "text": "可以。CFDriver 内置未知求解器开发流水线：从论文抽方程 → 量纲一致性核对 → fork 最近邻求解器 → fvm/fvc 离散实现 → wmake 编译调试（BLAME LADDER L8）→ Manufactured Solution + 收敛阶 + benchmark 三关验证。"}},
-        {"@type": "Question", "name": "数据安全吗？算例会被上传吗？",
-         "acceptedAnswer": {"@type": "Answer", "text": "case 文件、几何、结果、token 默认全部留在本机。CFDriver 本身不连任何上传服务器。唯一外发：你选的模型 API。要完全离线，接本地 vLLM / Ollama 即可。"}}
-      ]
-    }
-  ]
-}
-</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+SC:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -400,353 +348,153 @@ footer .links{display:flex;gap:24px;flex-wrap:wrap}
 </style>
 </head>
 <body>
-
-<nav class="top">
-  <div class="inner">
-    <a href="#top" class="brand">
-      <span class="logo" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3 11 C 9 11, 12 18, 18 18 S 27 11, 29 11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M3 17 C 9 17, 12 24, 18 24 S 27 17, 29 17" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.6"/><circle cx="24" cy="9" r="1.6" fill="currentColor"/></svg></span>
-      <span>CFDriver</span>
-    </a>
-    <div class="nav-links">
-      <a href="#pitch">概述</a>
-      <a href="#solver">求解器</a>
-      <a href="#features">特性</a>
-      <a href="#compare">对比</a>
-      <a href="#install">安装</a>
-      <a href="#faq">常见问题</a>
-      <a href="cfdriver4mto/">CFDriver4MTO 案例</a>
-      <a href="https://github.com/LZF1111/nullflux" class="cta">GitHub &rsaquo;</a>
-    </div>
-  </div>
-</nav>
+<nav class="top"><div class="inner">
+<a href="#top" class="brand"><span class="logo" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3 11 C 9 11, 12 18, 18 18 S 27 11, 29 11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M3 17 C 9 17, 12 24, 18 24 S 27 17, 29 17" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.6"/><circle cx="24" cy="9" r="1.6" fill="currentColor"/></svg></span><span>CFDriver</span></a>
+<div class="nav-links">
+<a href="#features">功能</a>
+<a href="#status">现状</a>
+<a href="#install">安装</a>
+<a href="#faq">常见问题</a>
+<a href="cfdriver4mto/">CFDriver4MTO 案例</a>
+<a href="https://github.com/LZF1111/nullflux" class="cta">GitHub &rsaquo;</a>
+</div>
+</div></nav>
 
 <section class="hero" id="top">
-  <div class="wrap">
-    <div class="eyebrow">v0.7.2 &middot; 本地部署 &middot; Linux x64</div>
-    <h1>不只是 coding agent，<br>更是你的<span class="accent">仿真工程专家</span>。</h1>
-    <p class="lede">读论文 &middot; 建网格 &middot; 驱动开源流体力学软件 &middot; 调 ParaView &middot; 看云图 &middot; 判收敛</p>
-    <p class="lede">必要时，还能为你从零写一个<span style="color:var(--accent)">未知求解器</span>。</p>
-    <p class="author">by LZF &middot; 任意大模型可接入 &middot; 国产模型性价比之选</p>
-    <div class="cta-row">
-      <a href="https://github.com/LZF1111/nullflux/releases/latest" class="btn btn-primary">立即下载</a>
-      <a href="#features" class="btn-link">了解更多</a>
-    </div>
-  </div>
-  <div class="device">
-    <div class="device-frame">
-      <img src="screenshot-main.png" alt="CFDriver AI CFD Agent 主界面截图 — 本地 AI 仿真工程师驱动 OpenFOAM 与 ParaView">
-    </div>
-    <p class="device-caption">主界面 &middot; 左侧资源管理器 &middot; 中部 ParaView 渲染 + 终端 &middot; 右侧多轮对话与工具调用</p>
-  </div>
-</section>
-
-<section class="pitch" id="pitch">
-  <div class="wrap">
-    <div class="eyebrow">为什么是 CFDriver</div>
-    <h2 class="headline">通用代码 Agent 写得了脚本，<br>却跑不通一个仿真。</h2>
-    <p class="subhead">Codex、Claude Code 这类通用助手能写代码，但不懂为什么 <code>blockMesh</code> 报 Negative volume，不懂残差震荡型发散，不懂 <code>0.orig/</code> 工作流，更不会判断一个新写的求解器有没有违反守恒。CFDriver 内置完整 CFD 工程协议、视觉核验闭环、论文复现专用流程以及未知求解器开发流水线，把"一位懂仿真的工程师"装进对话框。</p>
-    <div class="pitch-stats">
-      <div class="ps"><div class="ps-num">30+</div><div class="ps-lbl">原子工具</div></div>
-      <div class="ps"><div class="ps-num">M1–M7</div><div class="ps-lbl">阶段工作流</div></div>
-      <div class="ps"><div class="ps-num">L1–L9</div><div class="ps-lbl">BLAME LADDER</div></div>
-      <div class="ps"><div class="ps-num">100%</div><div class="ps-lbl">本地运行</div></div>
-    </div>
-  </div>
-</section>
-
-<section class="tiles">
-  <div class="tiles-grid">
-    <div class="tile">
-      <div>
-        <div class="tile-eyebrow">任意模型接入</div>
-        <h3>选你想要的模型。<br><span class="accent">国产模型 = 性价比之选。</span></h3>
-        <p class="tile-sub">OpenAI &middot; Anthropic &middot; Google &middot; DeepSeek &middot; Kimi &middot; 通义 &middot; GLM &middot; 智谱 &middot; 本地 vLLM —— 任何 OpenAI 兼容协议都能接。在 CFD 工程任务上，国产模型不仅 token 成本仅为 Claude 的 5–10%，效果反而常常更稳，因为 CFDriver 的中文工程协议为它们量身定制，连求解器 C++ 代码生成都做了针对性提示工程。</p>
-      </div>
-      <div class="row">
-        <span class="pill">OpenAI</span>
-        <span class="pill">Anthropic</span>
-        <span class="pill">Gemini</span>
-        <span class="pill hi">DeepSeek</span>
-        <span class="pill hi">Kimi</span>
-        <span class="pill hi">Qwen</span>
-        <span class="pill hi">GLM</span>
-        <span class="pill">vLLM</span>
-      </div>
-    </div>
-    <div class="tile dark">
-      <div>
-        <div class="tile-eyebrow">仿真专属能力</div>
-        <h3>不是会写脚本，<br>是真的<span class="accent">会跑算例</span>。</h3>
-        <p class="tile-sub">7 阶段工作流 (M1→M7) &middot; 9 层 BLAME LADDER 报错排查 &middot; 视觉核验闭环 &middot; 论文参数三遍核对 &middot; 0.orig 工作流 &middot; STL 贴合度采样 &middot; 残差时序流式分析 &middot; 未知求解器开发流水线。这些是通用 coding agent 没有的硬协议。</p>
-      </div>
-      <div class="row">
-        <span class="pill">OpenFOAM</span>
-        <span class="pill">MFIX</span>
-        <span class="pill">LBM</span>
-        <span class="pill">SU2</span>
-        <span class="pill">ParaView</span>
-        <span class="pill">视觉核验</span>
-        <span class="pill">求解器开发</span>
-        <span class="pill">贝叶斯优化</span>
-      </div>
-    </div>
-  </div>
-</section>
-
-<section class="solver" id="solver">
-  <div class="wrap">
-    <div class="solver-grid">
-      <div class="solver-copy">
-        <div class="eyebrow">未知求解器开发</div>
-        <h2>没人写过的方程，<br>也能<span class="accent">从零跑起来</span>。</h2>
-        <p>大多数 AI 助手只能调用 OpenFOAM 现成求解器。CFDriver 不同 —— 给它一篇论文或一组控制方程，它能为你完整完成新求解器的研发闭环。</p>
-        <p>这条流水线把"科研里最痛的两周"压成"一次对话"。任何小众物理场、改写本构、加源项、换数值格式，都能在工程纪律下落地。</p>
-        <div class="solver-list">
-          <div class="it"><span class="k">STEP 1</span><span class="t"><b>方程推导核对。</b><span>从论文抽控制方程，KaTeX 渲染、量纲一致性自动校验，缺失边界条件主动提问。</span></span></div>
-          <div class="it"><span class="k">STEP 2</span><span class="t"><b>架构选型。</b><span>在 OpenFOAM 上 fork 最近邻求解器，或基于 fvOptions / customLib 起新工程，目录结构、CMakeLists / Make/files 一次写对。</span></span></div>
-          <div class="it"><span class="k">STEP 3</span><span class="t"><b>离散与实现。</b><span>逐项写成 fvm/fvc 表达，源项、本构、湍流闭包逐行注释；同步生成单测样例。</span></span></div>
-          <div class="it"><span class="k">STEP 4</span><span class="t"><b>编译 &amp; 调试。</b><span>wmake / cmake 编译错误按 BLAME LADDER L8 处理：缺头文件、模板特化、链接顺序逐层定位，不许"瞎改 .H"。</span></span></div>
-          <div class="it"><span class="k">STEP 5</span><span class="t"><b>验证。</b><span>Manufactured Solution + 收敛阶测试 + benchmark 算例对比文献。三关都过才算"求解器可用"。</span></span></div>
-        </div>
-      </div>
-      <div class="solver-code">
-        <div class="terminal-head">
-          <div class="dots"><span></span><span></span><span></span></div>
-          <span class="title">myNewSolver.C &middot; auto-generated</span>
-        </div>
-<pre><span class="c">// CFDriver 自动生成：基于论文 (Smith 2024) 推导</span>
-<span class="c">// 方程：∂(αρU)/∂t + ∇·(αρU⊗U) = -∇p + ∇·τ + αρg + S_drag</span>
-
-<span class="k">while</span> (runTime.run())
-{
-    <span class="k">#include</span> <span class="s">"CourantNo.H"</span>
-    <span class="k">#include</span> <span class="s">"setDeltaT.H"</span>
-    runTime++;
-
-    <span class="c">// --- 论文式 (12)：新增非牛顿粘性项 ---</span>
-    <span class="m">volScalarField</span> muEff = mu0 * pow(strainRate + SMALL, n - <span class="m">1.0</span>);
-
-    <span class="k">fvVectorMatrix</span> UEqn
-    (
-        fvm::ddt(alpha, rho, U)
-      + fvm::div(alphaRhoPhi, U)
-      - fvm::laplacian(muEff, U)
-     ==
-        alpha * rho * g
-      + <span class="m">dragModel_</span>->S(U)    <span class="c">// 论文式 (14) 拖曳力</span>
-    );
-
-    UEqn.relax();
-    solve(UEqn == -fvc::grad(p));
-
-    <span class="c">// MMS 收敛阶检查 → 自动写入 validation.log</span>
-    <span class="k">#include</span> <span class="s">"mmsCheck.H"</span>
-}
-<span class="c">// ✓ 编译通过  ✓ MMS 二阶收敛  ✓ benchmark 误差 < 3%</span></pre>
-      </div>
-    </div>
-  </div>
+<div class="wrap">
+<div class="eyebrow">开源 &middot; Apache-2.0 &middot; Node.js 18+</div>
+<h1>多相流 CFD 的<br><span class="accent">智能体工作台</span>。</h1>
+<p class="lede">用大模型驱动 OpenFOAM / MFIX / LBM / DEM：建模、求解、监控、后处理。</p>
+<p class="lede">重点是可审计的论文复现，和无人值守的长时间计算。</p>
+<div class="cta-row">
+<a href="#install" class="btn btn-primary">安装</a>
+<a href="https://github.com/LZF1111/nullflux" class="btn-link">查看源码</a>
+</div>
+</div>
+<div class="device"><div class="device-frame">
+<img src="screenshot-main.png" alt="CFDriver 主界面截图">
+</div>
+<p class="device-caption">主界面：左侧文件，中部预览与终端，右侧对话与工具调用（早期版本截图）</p>
+</div>
 </section>
 
 <section class="features-section" id="features">
-  <div class="wrap">
-    <div class="features-head">
-      <div class="eyebrow">核心能力</div>
-      <h2 class="headline">为仿真而生的<br>每一个细节。</h2>
-      <p class="subhead">30+ 原子工具、7 阶段闭环、9 层报错恢复。每一项都是为了让算例真正跑出来。</p>
-    </div>
-    <div class="feat-grid">
-      <div class="feat"><div class="ico-mono">01</div><h4>开源流体力学软件全栈</h4><p>OpenFOAM、MFIX、LBM、SU2 等主流开源 CFD 软件统一驱动：从 <code>blockMesh</code> / <code>snappyHexMesh</code> 到 setFields、求解器、残差、ParaView 渲染、收敛核验一条龙。</p></div>
-      <div class="feat"><div class="ico-mono">02</div><h4>未知求解器开发</h4><p>给一篇论文或一组方程，从零搭脚手架、推离散格式、写 C++ / Python 实现、跑 manufactured solution 验证、再做收敛阶测试。新场新方程不再卡壳。</p></div>
-      <div class="feat"><div class="ico-mono">03</div><h4>视觉核验闭环</h4><p>VLM 自动检查 STL 法向、网格质量、收敛曲线、云图对称性。算错了模型自己能看出来，自动回滚到上一稳定步。</p></div>
-      <div class="feat"><div class="ico-mono">04</div><h4>论文复现专属协议</h4><p>文献核对三遍 + <code>paper_params.lock.md</code> 宪法锁 + DEVIATION REQUEST 偏离申报，杜绝模型越改越漂移、参数越调越像玄学。</p></div>
-      <div class="feat"><div class="ico-mono">05</div><h4>BLAME LADDER L1–L9</h4><p>求解器报错按 9 层阶梯排查：边界 → 网格 → 时间步 → 物理模型 → 数值格式 → 编译器。不许跳级、不许甩锅论文。</p></div>
-      <div class="feat"><div class="ico-mono">06</div><h4>本地优先 · 数据不出门</h4><p>case、几何、结果、token 默认全部留在本机。可全程离线（接本地 vLLM / Ollama / LM Studio），算例不离开你的工作站。</p></div>
-      <div class="feat"><div class="ico-mono">07</div><h4>多物理场扩展</h4><p>颗粒流 MFIX、格子玻尔兹曼 LBM、可压流 SU2、贝叶斯参数寻优 study 都已内置标准工作流，可继续扩展自定义求解链。</p></div>
-      <div class="feat"><div class="ico-mono">08</div><h4>KaTeX 公式渲染</h4><p>前端实时渲染数学公式与张量记号，再也不是折行 ASCII 拼出来的伪公式，方程推导清清楚楚。</p></div>
-      <div class="feat"><div class="ico-mono">09</div><h4>人在回路（HIL）</h4><p>需要论文图精确数据点？弹手动标注仪，你点几下，结果自动塞回对话上下文，模型按你的标注继续推进。</p></div>
-      <div class="feat"><div class="ico-mono">10</div><h4>中文工程协议</h4><p>提示词、错误回复、报告生成全部中文优化。国产模型在这套协议下，仿真任务表现比 GPT-4o / Claude 更稳，token 成本仅 5–10%。</p></div>
-      <div class="feat"><div class="ico-mono">11</div><h4>异步求解器调度</h4><p>长任务后台跑，残差时序流式抓取；发散自动叫停，收敛自动渲染，桌面通知到位。</p></div>
-      <div class="feat"><div class="ico-mono">12</div><h4>工程报告自动生成</h4><p>每个算例自动留下 case-card：参数、网格质量、残差曲线、关键云图与论文图对比，导出即报告。</p></div>
-    </div>
-  </div>
+<div class="wrap">
+<div class="features-head">
+<div class="eyebrow">功能</div>
+<h2 class="headline">它现在能做的事。</h2>
+<p class="subhead">以下都对应仓库里的代码，可以直接阅读和修改。</p>
+</div>
+<div class="feat-grid">
+<div class="feat"><div class="ico-mono">01</div><h4>对话驱动仿真</h4><p>描述目标或上传论文，智能体读文献、生成几何与网格、写字典、启动求解、读日志、出图。每一步都是可见的工具调用，可随时打断或插话。</p></div>
+<div class="feat"><div class="ico-mono">02</div><h4>后台长时求解</h4><p>求解作业独立于网页和智能体进程运行；服务重启后自动重新接管仍在跑的作业。作业结束、发散或停滞时唤醒智能体继续。</p></div>
+<div class="feat"><div class="ico-mono">03</div><h4>断线自动恢复</h4><p>模型接口出错时按退避重试，长任务超过重试次数后转为定时保活，接口恢复就从中断处继续。</p></div>
+<div class="feat"><div class="ico-mono">04</div><h4>复现偏离审批</h4><p>论文参数写入锁定文件；几何、边界条件或数值设置上的任何简化都要登记为偏离，由用户在卡片上批准或驳回后才生效。</p></div>
+<div class="feat"><div class="ico-mono">05</div><h4>KPI 可信度检查</h4><p>报告前检查统计时间窗是否越过准稳态、窗长是否足够、哪些指标仍由初值主导；未通过不能宣布任务完成。</p></div>
+<div class="feat"><div class="ico-mono">06</div><h4>启动前体检</h4><p>启动求解前检查网格质量、patch 对应、核数是否超订、时间步设置等常见问题。</p></div>
+<div class="feat"><div class="ico-mono">07</div><h4>监控与后处理</h4><p>作业面板、残差曲线、日志尾部；场切片与时均统计；网页内 STL / 网格 3D 预览；OpenFOAM 字典语法高亮。</p></div>
+<div class="feat"><div class="ico-mono">08</div><h4>经验沉淀</h4><p>验证通过的做法可存成技能卡，报错模式会被记录，供之后的任务检索复用。</p></div>
+<div class="feat"><div class="ico-mono">09</div><h4>任意 OpenAI 兼容模型</h4><p>在设置页填写 Base URL、模型名和 Key 即可，云端 API 或本地 vLLM / Ollama 均可。效果与模型能力强相关。</p></div>
+</div>
+</div>
 </section>
 
-<section class="workflow">
-  <div class="wrap">
-    <div class="features-head">
-      <div class="eyebrow" style="color:#7ec0ff">M1 → M7 工作流</div>
-      <h2 class="headline">标准化的<br>仿真工程流水线。</h2>
-      <p class="subhead">把一次 CFD 任务拆成 7 个阶段，每段必须通过视觉核验才能进下一步。这是工程师该有的纪律。</p>
-    </div>
-    <div class="wf-grid">
-      <div class="wf"><div class="num">M1 &middot; GEOM</div><h5>几何与单位</h5><p>STL 检查、单位核对、法向 / 封闭性体检。</p></div>
-      <div class="wf"><div class="num">M2 &middot; PLAN</div><h5>方案与参数</h5><p>论文参数提取 + 三遍核对 + 宪法锁定。</p></div>
-      <div class="wf"><div class="num">M3 &middot; MESH</div><h5>网格生成</h5><p>blockMesh + snappyHexMesh，STL 贴合采样。</p></div>
-      <div class="wf"><div class="num">M4 &middot; BC</div><h5>边界与 0.orig</h5><p>必走 0.orig 工作流，改飞一行回滚。</p></div>
-      <div class="wf"><div class="num">M4.5 &middot; IC</div><h5>初始场 setFields</h5><p>多相 / 分层算例的"算白算"防御。</p></div>
-      <div class="wf"><div class="num">M5 &middot; SOLVE</div><h5>求解器异步运行</h5><p>残差时序流式抓取，发散自动停。</p></div>
-      <div class="wf"><div class="num">M6 &middot; POST</div><h5>后处理与对比</h5><p>ParaView 离屏渲染 → VLM 体检 → 论文图比对。</p></div>
-      <div class="wf"><div class="num">M7 &middot; OPT</div><h5>参数寻优</h5><p>贝叶斯优化 study，baseline 通过后才允许开。</p></div>
-    </div>
-  </div>
-</section>
-
-<section class="compare" id="compare">
-  <div class="wrap">
-    <div class="features-head">
-      <div class="eyebrow">横向对比</div>
-      <h2 class="headline">和通用 coding agent 的差距，<br>不在写代码，在工程纪律。</h2>
-    </div>
-    <div class="compare-card">
-      <table class="compare-table">
-        <thead>
-          <tr>
-            <th>能力</th>
-            <th>Codex / Cursor</th>
-            <th>Claude Code</th>
-            <th class="us">CFDriver</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr><td>写 Python / C++ 脚本</td><td class="yes">✓</td><td class="yes">✓</td><td class="yes">✓</td></tr>
-          <tr class="highlight"><td>理解 OpenFOAM case 结构</td><td class="no">—</td><td class="partial">部分</td><td class="yes">原生</td></tr>
-          <tr class="highlight"><td>残差时序判收敛</td><td class="no">—</td><td class="no">—</td><td class="yes">流式抓取</td></tr>
-          <tr class="highlight"><td>VLM 视觉核验云图 / 网格</td><td class="no">—</td><td class="no">—</td><td class="yes">闭环</td></tr>
-          <tr class="highlight"><td>STL 贴合度采样验证</td><td class="no">—</td><td class="no">—</td><td class="yes">原子工具</td></tr>
-          <tr class="highlight"><td>论文参数宪法锁（防漂移）</td><td class="no">—</td><td class="no">—</td><td class="yes">paper_params.lock</td></tr>
-          <tr class="highlight"><td>未知求解器从零开发</td><td class="no">—</td><td class="no">—</td><td class="yes">内置流水线</td></tr>
-          <tr class="highlight"><td>9 层报错阶梯排查</td><td class="no">—</td><td class="no">—</td><td class="yes">BLAME LADDER</td></tr>
-          <tr><td>本地部署 &middot; 数据不外发</td><td class="no">SaaS</td><td class="no">SaaS</td><td class="yes">本机优先</td></tr>
-          <tr><td>使用国产模型</td><td class="no">—</td><td class="no">—</td><td class="yes">任意切换</td></tr>
-          <tr><td>Token 成本（同等任务）</td><td class="partial">中</td><td class="partial">高</td><td class="yes">国产仅 5–10%</td></tr>
-        </tbody>
-      </table>
-      <p class="compare-note">数据基于 OpenFOAM 圆柱绕流 / 多相分层算例的实测对比。Codex / Claude Code 是优秀的通用编程助手，但它们的设计目标不是工程仿真。</p>
-    </div>
-  </div>
+<section class="features-section" id="status">
+<div class="wrap">
+<div class="features-head">
+<div class="eyebrow">现状与限制</div>
+<h2 class="headline">在研项目，如实说明。</h2>
+</div>
+<div class="faq">
+<details class="faq-item" open><summary>已在用</summary><div class="ans">OpenFOAM 多相流算例（双流体、反应流化床、搅拌槽 MRF、鼓泡塔）的建模、长时求解托管、监控和后处理；MFIX、LBM、LIGGGHTS/LAMMPS 有基础支持。</div></details>
+<details class="faq-item" open><summary>还没做到</summary><div class="ans">还没有一篇论文被完整端到端复现。长任务中的卡顿主要来自模型接口断线或欠费、等待用户审批，以及模型写出格式错误的脚本；已有自动恢复，但仍需要人照看。弱模型容易在网格和边界条件上出错，审批流程能拦下，但不会替它修好。界面和提示以中文为主。</div></details>
+</div>
+</div>
 </section>
 
 <section class="install" id="install">
-  <div class="wrap">
-    <div class="features-head">
-      <div class="eyebrow">三步起飞</div>
-      <h2 class="headline">下载、解包、启动。</h2>
-      <p class="subhead">Linux x64 工作站。Windows 用户走 WSL2 即可。开源 CFD 软件需提前安装（OpenFOAM 推荐 v2306 以上，其他按需）。</p>
-    </div>
-    <div class="install-grid">
-      <div class="terminal">
-        <div class="terminal-head">
-          <div class="dots"><span></span><span></span><span></span></div>
-          <span class="title">cfdriver@workstation: ~</span>
-        </div>
-<pre><span class="c"># 1. 下载封装发行版</span>
-<span class="k">wget</span> https://github.com/LZF1111/nullflux\
-/releases/latest/download/cfdriver-linux-sealed.tar.gz
+<div class="wrap">
+<div class="features-head">
+<div class="eyebrow">安装</div>
+<h2 class="headline">一行命令。</h2>
+<p class="subhead">需要 Node.js 18+ 和 git。求解器装在同一台机器上即可。</p>
+</div>
+<div class="install-grid">
+<div class="terminal">
+<div class="terminal-head"><div class="dots"><span></span><span></span><span></span></div><span class="title">~</span></div>
+<pre><span class="c"># Linux / macOS / WSL</span>
+<span class="k">curl</span> -fsSL https://raw.githubusercontent.com/LZF1111/nullflux\
+/main/install.sh | bash
+<span class="k">cd</span> ~/cfdriver &amp;&amp; ./start.sh
 
-<span class="c"># 2. 解包</span>
-<span class="k">tar</span> -xzf cfdriver-linux-sealed.tar.gz
-<span class="k">cd</span> sealed
+<span class="c"># 或从源码</span>
+<span class="k">git</span> clone --depth 1 https://github.com/LZF1111/nullflux.git cfdriver
+<span class="k">cd</span> cfdriver &amp;&amp; npm install &amp;&amp; npm start
 
-<span class="c"># 3. 启动</span>
-<span class="k">bash</span> start.sh
-
-<span class="c"># → 浏览器打开 http://localhost:5173</span>
-<span class="c"># → 配置模型 API Key，开聊</span></pre>
-      </div>
-      <div class="req-card">
-        <h4>系统要求</h4>
-        <ul>
-          <li><b>操作系统</b><code>Linux x86_64</code></li>
-          <li><b>Node.js</b><code>&ge; 18</code></li>
-          <li><b>Python</b><code>&ge; 3.9</code></li>
-          <li><b>流体力学软件</b><code>OF v2306 / MFIX / SU2</code></li>
-          <li><b>ParaView</b><code>5.10+ pvpython</code></li>
-          <li><b>模型接入</b><code>OpenAI 兼容</code></li>
-        </ul>
-      </div>
-    </div>
-  </div>
+<span class="c"># Windows：下载后双击 start.bat</span>
+<span class="c"># 浏览器打开 http://127.0.0.1:5174/app，在「设置」里填模型接口</span></pre>
+</div>
+<div class="req-card">
+<h4>环境</h4>
+<ul>
+<li><b>Node.js</b><code>&ge; 18</code></li>
+<li><b>Python</b><code>&ge; 3.9（后处理脚本）</code></li>
+<li><b>求解器</b><code>OpenFOAM / MFIX 等，按需</code></li>
+<li><b>模型</b><code>OpenAI 兼容接口</code></li>
+<li><b>许可</b><code>Apache-2.0</code></li>
+</ul>
+</div>
+</div>
+</div>
 </section>
 
 <section class="faq-section" id="faq">
-  <div class="wrap">
-    <div class="features-head">
-      <div class="eyebrow">常见问题</div>
-      <h2 class="headline">先看这里。</h2>
-    </div>
-    <div class="faq">
-      <details class="faq-item" open>
-        <summary>CFDriver 和 Cursor / Codex / Claude Code 有什么区别？</summary>
-        <div class="ans">通用 coding agent 不懂 CFD 工程纪律：不知道 <code>blockMesh</code> 失败 80% 是 STL 单位错、不会盯残差曲线判收敛、不会做 <code>0.orig/</code> 工作流防回滚。CFDriver 是为仿真工程量身设计的：内置 7 阶段工作流、视觉核验闭环、9 层 BLAME LADDER、论文参数宪法锁，并能直接驱动本地 OpenFOAM / MFIX / ParaView。</div>
-      </details>
-      <details class="faq-item">
-        <summary>支持哪些模型？必须用国产吗？</summary>
-        <div class="ans">任意大模型都可接入：OpenAI、Anthropic、Gemini、DeepSeek、Kimi、Qwen、GLM、智谱，以及本地 vLLM / Ollama / LM Studio。国产模型不是限制，而是性价比推荐 —— 在 CFDriver 的中文工程协议下，DeepSeek、Kimi 等模型在仿真任务上的稳定性与正确率常常优于通用大模型，而 token 成本仅为 5–10%。</div>
-      </details>
-      <details class="faq-item">
-        <summary>开源吗？为什么是封装混淆发行？</summary>
-        <div class="ans">当前是封装发行版（sealed）：esbuild 打包 + javascript-obfuscator（RC4 + 控制流扁平化）。源码暂未公开，欢迎付费使用 / 商务合作。封装版完全可用、可本地运行、可二次配置 API。</div>
-      </details>
-      <details class="faq-item">
-        <summary>数据安全吗？我的算例会被上传吗？</summary>
-        <div class="ans">case 文件、几何、结果、token 默认全部留在本机文件系统。CFDriver 本身不连任何上传服务器。唯一外发：你选的模型 API（DeepSeek / OpenAI / …）会收到对话上下文。要完全离线，接本地 vLLM 即可。</div>
-      </details>
-      <details class="faq-item">
-        <summary>Windows 能跑吗？</summary>
-        <div class="ans">前端 UI 在 Windows 没问题，但 OpenFOAM / pvpython 需要 Linux。推荐：Windows + WSL2（Ubuntu 22.04），CFDriver 跑在 WSL，浏览器从 Windows 访问。</div>
-      </details>
-      <details class="faq-item">
-        <summary>遇到 Bug 或想提需求？</summary>
-        <div class="ans">去 <a href="https://github.com/LZF1111/nullflux/issues">GitHub Issues</a> 提，附 server 终端日志 + case 路径，或直接联系作者。</div>
-      </details>
-    </div>
-  </div>
+<div class="wrap">
+<div class="features-head">
+<div class="eyebrow">常见问题</div>
+<h2 class="headline">先看这里。</h2>
+</div>
+<div class="faq">
+<details class="faq-item" open><summary>它和通用编程智能体（Claude Code、Codex、OpenCode 等）是什么关系？</summary><div class="ans">底层同样是“模型 + 工具循环”。CFDriver 额外提供了 CFD 专用的工具（求解作业托管、网格与日志检查、后处理）、长时任务的恢复机制和论文复现的审批流程。在我们自己设计的少量对照任务上看到了优势，但样本还小，不作一般性结论。</div></details>
+<details class="faq-item"><summary>必须装 OpenFOAM 吗？</summary><div class="ans">要真正跑算例，需要在同一台机器上装好对应求解器（OpenFOAM v2306 / OpenFOAM-10、MFIX 等），CFDriver 会自动查找。只试用对话和后处理可以先不装。</div></details>
+<details class="faq-item"><summary>Windows 能用吗？</summary><div class="ans">界面和服务可以直接在 Windows 上运行（双击 start.bat）；OpenFOAM 等求解器通常需要 Linux 或 WSL2。</div></details>
+<details class="faq-item"><summary>数据会被上传吗？</summary><div class="ans">算例、几何和结果都留在运行 CFDriver 的机器上。对话内容会发送给你配置的模型接口；使用本地模型则不出本机。</div></details>
+<details class="faq-item"><summary>论文复现做到了什么程度？</summary><div class="ans">Lu et al. 2016 中试 MTO 三维反应器正在复现中：冷态 + 热态按原始设置测得约需 3 个月墙钟，提速方案正在对照测试、待审批。CFDriver4MTO 案例页列出了已对上和没对上的指标。</div></details>
+</div>
+</div>
 </section>
 
 <section class="demo-section" id="demo">
-  <div class="wrap">
-    <div class="features-head">
-      <div class="eyebrow">实机演示</div>
-      <h2 class="headline">一段对话，<br>跑完整条工程链。</h2>
-      <p class="subhead">论文参数 → 网格 → 求解 → 后处理，一气呵成。这才是 CFD 工程师该用的 AI。</p>
-    </div>
-    <div class="device" style="margin-top:0">
-      <div class="device-frame">
-        <video src="demo.mp4" poster="screenshot-main.png" controls autoplay muted loop playsinline preload="metadata">
-          你的浏览器不支持 video 标签。<a href="demo.mp4">点此下载演示</a>
-        </video>
-      </div>
-      <p class="device-caption">▶ 对话发起 → 工具调用 → OpenFOAM 求解 → ParaView 渲染 → 视觉核验闭环</p>
-    </div>
-  </div>
+<div class="wrap">
+<div class="features-head">
+<div class="eyebrow">演示</div>
+<h2 class="headline">早期版本录屏。</h2>
+</div>
+<div class="device" style="margin-top:0"><div class="device-frame">
+<video src="demo.mp4" poster="screenshot-main.png" controls muted loop playsinline preload="metadata">你的浏览器不支持 video 标签。<a href="demo.mp4">下载演示</a></video>
+</div></div>
+</div>
 </section>
 
 <section class="final">
-  <div class="wrap">
-    <h2>把你的 Linux 工作站，<br>变成一位<span class="accent">仿真工程师</span>。</h2>
-    <p>v0.7.2 已上线 &middot;  开箱即用</p>
-    <div class="cta-row">
-      <a href="https://github.com/LZF1111/nullflux/releases/latest" class="btn btn-primary">立即下载</a>
-      <a href="https://github.com/LZF1111/nullflux" class="btn-link">查看 GitHub</a>
-    </div>
-  </div>
+<div class="wrap">
+<h2>欢迎<span class="accent">一起开发</span>和合作。</h2>
+<p>多相流反应器模拟、论文复现、工艺放大与优化方向的合作，请联系 李子锋（中国科学院过程工程研究所）<a href="mailto:lizifeng@ipe.ac.cn">lizifeng@ipe.ac.cn</a></p>
+<div class="cta-row">
+<a href="https://github.com/LZF1111/nullflux" class="btn btn-primary">GitHub</a>
+<a href="https://github.com/LZF1111/nullflux/blob/main/CONTRIBUTING.md" class="btn-link">开发指南</a>
+</div>
+</div>
 </section>
 
-<footer>
-  <div class="row">
-    <div>
-      <div class="brand" style="margin-bottom:6px"><span class="logo" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3 11 C 9 11, 12 18, 18 18 S 27 11, 29 11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M3 17 C 9 17, 12 24, 18 24 S 27 17, 29 17" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.6"/><circle cx="24" cy="9" r="1.6" fill="currentColor"/></svg></span><span>CFDriver</span></div>
-      <span>© 2026 LZF &middot; Proprietary &middot; Built for serious CFD engineers.</span>
-    </div>
-    <div class="links">
-      <a href="https://github.com/LZF1111/nullflux">GitHub</a>
-      <a href="https://github.com/LZF1111/nullflux/releases">Releases</a>
-      <a href="https://github.com/LZF1111/nullflux/issues">Issues</a>
-      <a href="https://lzf1111.github.io/">作者博客</a>
-    </div>
-  </div>
-</footer>
-
+<footer><div class="row">
+<div><div class="brand" style="margin-bottom:6px"><span class="logo" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3 11 C 9 11, 12 18, 18 18 S 27 11, 29 11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M3 17 C 9 17, 12 24, 18 24 S 27 17, 29 17" stroke="currentColor" stroke-width="2" stroke-linecap="round" opacity="0.6"/><circle cx="24" cy="9" r="1.6" fill="currentColor"/></svg></span><span>CFDriver</span></div>
+<span>&copy; 2026 Zifeng Li and contributors &middot; Apache-2.0</span></div>
+<div class="links">
+<a href="https://github.com/LZF1111/nullflux">GitHub</a>
+<a href="https://github.com/LZF1111/nullflux/issues">Issues</a>
+<a href="mailto:lizifeng@ipe.ac.cn">联系</a>
+</div>
+</div></footer>
 </body>
 </html>

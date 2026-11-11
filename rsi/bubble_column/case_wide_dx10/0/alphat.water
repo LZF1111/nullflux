@@ -1,0 +1,150 @@
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    object      alphat.water;
+}
+
+dimensions      [1 -1 -1 0 0 0 0];
+
+internalField   uniform 0;
+
+boundaryField
+{
+    zone1_inlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    zone2_inlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    zone3_inlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    zone4_inlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    zone5_inlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    zone6_inlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    zone7_inlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    zone8_inlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    zone9_inlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    zone10_inlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    zone11_inlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    zone12_inlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    zone13_inlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    zone14_inlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    zone15_inlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    zone16_inlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    zone17_inlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    zone18_inlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    zone19_inlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    zone20_inlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    zone21_inlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    zone22_inlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    zone23_inlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    zone24_inlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    outlet
+    {
+        type                calculated;
+        value               $internalField;
+    }
+    walls
+    {
+        type                compressible::alphatWallFunction;
+        Prt                 0.85;
+        value               $internalField;
+    }
+    frontAndBack
+    {
+        type         empty;
+    }
+}

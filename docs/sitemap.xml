@@ -3,13 +3,13 @@
         xmlns:image="http://www.google.com/schemas/sitemap-image/0.9">
   <url>
     <loc>https://lzf1111.github.io/nullflux/</loc>
-    <lastmod>2026-05-18</lastmod>
+    <lastmod>2026-11-11</lastmod>
     <changefreq>weekly</changefreq>
     <priority>1.0</priority>
     <image:image>
       <image:loc>https://lzf1111.github.io/nullflux/screenshot-main.png</image:loc>
-      <image:title>NullFlux AI CFD Agent 主界面</image:title>
-      <image:caption>NullFlux - 本地 AI 仿真工程师，驱动 OpenFOAM / MFIX / LBM / SU2</image:caption>
+      <image:title>CFDriver 主界面</image:title>
+      <image:caption>CFDriver：开源多相流 CFD 智能体工作台</image:caption>
     </image:image>
   </url>
   <url>
@@ -21,10 +21,5 @@
     <loc>https://github.com/LZF1111/nullflux</loc>
     <changefreq>weekly</changefreq>
     <priority>0.8</priority>
-  </url>
-  <url>
-    <loc>https://github.com/LZF1111/nullflux/releases/latest</loc>
-    <changefreq>weekly</changefreq>
-    <priority>0.7</priority>
   </url>
 </urlset>

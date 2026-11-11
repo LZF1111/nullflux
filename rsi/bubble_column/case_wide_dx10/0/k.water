@@ -1,0 +1,151 @@
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    object      k.water;
+}
+
+dimensions      [0 2 -2 0 0 0 0];
+
+internalField   uniform 3.75e-5;
+
+boundaryField
+{
+    zone1_inlet
+    {
+        type                fixedValue;
+        value               $internalField;
+    }
+    zone2_inlet
+    {
+        type                fixedValue;
+        value               $internalField;
+    }
+    zone3_inlet
+    {
+        type                fixedValue;
+        value               $internalField;
+    }
+    zone4_inlet
+    {
+        type                fixedValue;
+        value               $internalField;
+    }
+    zone5_inlet
+    {
+        type                fixedValue;
+        value               $internalField;
+    }
+    zone6_inlet
+    {
+        type                fixedValue;
+        value               $internalField;
+    }
+    zone7_inlet
+    {
+        type                fixedValue;
+        value               $internalField;
+    }
+    zone8_inlet
+    {
+        type                fixedValue;
+        value               $internalField;
+    }
+    zone9_inlet
+    {
+        type                fixedValue;
+        value               $internalField;
+    }
+    zone10_inlet
+    {
+        type                fixedValue;
+        value               $internalField;
+    }
+    zone11_inlet
+    {
+        type                fixedValue;
+        value               $internalField;
+    }
+    zone12_inlet
+    {
+        type                fixedValue;
+        value               $internalField;
+    }
+    zone13_inlet
+    {
+        type                fixedValue;
+        value               $internalField;
+    }
+    zone14_inlet
+    {
+        type                fixedValue;
+        value               $internalField;
+    }
+    zone15_inlet
+    {
+        type                fixedValue;
+        value               $internalField;
+    }
+    zone16_inlet
+    {
+        type                fixedValue;
+        value               $internalField;
+    }
+    zone17_inlet
+    {
+        type                fixedValue;
+        value               $internalField;
+    }
+    zone18_inlet
+    {
+        type                fixedValue;
+        value               $internalField;
+    }
+    zone19_inlet
+    {
+        type                fixedValue;
+        value               $internalField;
+    }
+    zone20_inlet
+    {
+        type                fixedValue;
+        value               $internalField;
+    }
+    zone21_inlet
+    {
+        type                fixedValue;
+        value               $internalField;
+    }
+    zone22_inlet
+    {
+        type                fixedValue;
+        value               $internalField;
+    }
+    zone23_inlet
+    {
+        type                fixedValue;
+        value               $internalField;
+    }
+    zone24_inlet
+    {
+        type                fixedValue;
+        value               $internalField;
+    }
+    outlet
+    {
+        type                inletOutlet;
+        phi                 phi.water;
+        inletValue          $internalField;
+        value               $internalField;
+    }
+    walls
+    {
+        type                kqRWallFunction;
+        value               $internalField;
+    }
+    frontAndBack
+    {
+        type         empty;
+    }
+}

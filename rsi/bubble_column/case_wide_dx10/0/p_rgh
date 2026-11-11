@@ -1,0 +1,150 @@
+FoamFile
+{
+    version     2.0;
+    format      ascii;
+    class       volScalarField;
+    object      p_rgh;
+}
+
+dimensions      [1 -1 -2 0 0 0 0];
+
+internalField   uniform 1e5;
+
+boundaryField
+{
+    zone1_inlet
+    {
+        type                fixedFluxPressure;
+        value               $internalField;
+    }
+    zone2_inlet
+    {
+        type                fixedFluxPressure;
+        value               $internalField;
+    }
+    zone3_inlet
+    {
+        type                fixedFluxPressure;
+        value               $internalField;
+    }
+    zone4_inlet
+    {
+        type                fixedFluxPressure;
+        value               $internalField;
+    }
+    zone5_inlet
+    {
+        type                fixedFluxPressure;
+        value               $internalField;
+    }
+    zone6_inlet
+    {
+        type                fixedFluxPressure;
+        value               $internalField;
+    }
+    zone7_inlet
+    {
+        type                fixedFluxPressure;
+        value               $internalField;
+    }
+    zone8_inlet
+    {
+        type                fixedFluxPressure;
+        value               $internalField;
+    }
+    zone9_inlet
+    {
+        type                fixedFluxPressure;
+        value               $internalField;
+    }
+    zone10_inlet
+    {
+        type                fixedFluxPressure;
+        value               $internalField;
+    }
+    zone11_inlet
+    {
+        type                fixedFluxPressure;
+        value               $internalField;
+    }
+    zone12_inlet
+    {
+        type                fixedFluxPressure;
+        value               $internalField;
+    }
+    zone13_inlet
+    {
+        type                fixedFluxPressure;
+        value               $internalField;
+    }
+    zone14_inlet
+    {
+        type                fixedFluxPressure;
+        value               $internalField;
+    }
+    zone15_inlet
+    {
+        type                fixedFluxPressure;
+        value               $internalField;
+    }
+    zone16_inlet
+    {
+        type                fixedFluxPressure;
+        value               $internalField;
+    }
+    zone17_inlet
+    {
+        type                fixedFluxPressure;
+        value               $internalField;
+    }
+    zone18_inlet
+    {
+        type                fixedFluxPressure;
+        value               $internalField;
+    }
+    zone19_inlet
+    {
+        type                fixedFluxPressure;
+        value               $internalField;
+    }
+    zone20_inlet
+    {
+        type                fixedFluxPressure;
+        value               $internalField;
+    }
+    zone21_inlet
+    {
+        type                fixedFluxPressure;
+        value               $internalField;
+    }
+    zone22_inlet
+    {
+        type                fixedFluxPressure;
+        value               $internalField;
+    }
+    zone23_inlet
+    {
+        type                fixedFluxPressure;
+        value               $internalField;
+    }
+    zone24_inlet
+    {
+        type                fixedFluxPressure;
+        value               $internalField;
+    }
+    outlet
+    {
+        type                prghPressure;
+        p                   $internalField;
+        value               $internalField;
+    }
+    walls
+    {
+        type                fixedFluxPressure;
+        value               $internalField;
+    }
+    frontAndBack
+    {
+        type         empty;
+    }
+}

@@ -64,6 +64,17 @@ test('core count: -np, -n, and mpirun inside a job script', () => {
   assert.equal(ctx._npOf('./Allmissing', d), 1);
   assert.equal(ctx._npOf('simpleFoam > log.run'), 1);
   assert.equal(ctx._npOf('head -n 20 log.cold'), 1);
+  // 包装脚本把核数作为位置参数：launch.sh <dir> <np> <in> ...，脚本里 np=$2; mpirun -np $np
+  fs.writeFileSync(path.join(d, 'launch.sh'), '#!/bin/bash\ncd "$1" || exit 1\nnp=$2; inp=$3; shift 3\n/usr/bin/time -p mpirun -np $np /x/lmp_auto -in $inp "$@" -log log.liggghts\n');
+  assert.equal(ctx._npOf('./launch.sh /home/user/vibtray/A/gscan/G0.8 4 in.vib -var f 60', d), 4);
+  assert.equal(ctx._npOf('bash launch.sh /a 12 in.vib', d), 12);
+  // 直接写 mpirun -np $1 的脚本
+  fs.writeFileSync(path.join(d, 'go.sh'), 'mpirun -np $1 ./lmp_auto -in in.x\n');
+  assert.equal(ctx._npOf('bash go.sh 8', d), 8);
+  // 环境变量前缀 + 脚本默认值：NP=${NP:-60}
+  fs.writeFileSync(path.join(d, 'runspeed.sh'), '#!/bin/bash\nNP=${NP:-60}; TL=${TL:-600}\ntimeout -s INT $TL mpirun --bind-to none -np $NP reactingTwoPhaseEulerFoam -parallel > log.speed 2>&1\n');
+  assert.equal(ctx._npOf('NP=48 TL=600 ./runspeed.sh', d), 48);
+  assert.equal(ctx._npOf('./runspeed.sh', d), 60);
   fs.rmSync(d, { recursive: true, force: true });
 });
 

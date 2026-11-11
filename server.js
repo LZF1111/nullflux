@@ -4374,15 +4374,20 @@ function _npOf(command, cwd) {
   const text = String(command || '');
   const direct = /(?:^|[\s;&(])mpi(?:run|exec)(?=\s)[^\n;|&]*?\s-{1,2}np?\s+(\d+)/.exec(text);  // 只认命令位置的 mpirun
   if (direct) return +direct[1];
-  const sm = /(?:^|[;&(])\s*(?:(?:bash|sh|nohup|time)\s+)*((?:\.{0,2}\/)?[\w./-]*(?:All\w*|\.sh))(?=[\s;&)]|$)/.exec(text);
+  const sm = /(?:^|[;&(])\s*(?:(?:bash|sh|nohup|time)\s+|\w+=\S*\s+)*((?:\.{0,2}\/)?[\w./-]*(?:All\w*|\.sh))(?=[\s;&)]|$)/.exec(text);
   if (!sm) return 1;
   try {
     const base = String(cwd || '').replace(/^~(?=\/)/, os.homedir());
     const body = fssync.readFileSync(path.isAbsolute(sm[1]) ? sm[1] : path.resolve(WORKSPACE, base, sm[1]), 'utf8').slice(0, 200_000);
+    // 脚本的位置参数：launch.sh <dir> <np> ... 里 np=$2 → 取命令行里脚本后面第 2 个词
+    const argv = text.slice(sm.index + sm[0].length).trim().split(/[;&|]/)[0].trim().split(/\s+/).filter(Boolean);
     let best = 1;
     for (const m of body.matchAll(_MPI_NP_RE)) {
-      const def = m[2] ? new RegExp('^\\s*(?:export\\s+)?' + m[2] + '=["\']?(\\d+)', 'm').exec(body) : null;
-      const v = m[1] ? +m[1] : def ? +def[1] : 0;
+      const def = m[2] ? new RegExp('^\\s*(?:export\\s+)?' + m[2] + '=["\']?(?:(\\d+)|\\$\\{?(\\d)\\}?|\\$\\{' + m[2] + ':-(\\d+)\\})', 'm').exec(body) : null;
+      // 命令前缀里的环境变量（NP=48 TL=600 ./runspeed.sh）优先于脚本默认值 ${NP:-60}
+      const env = m[2] && !/^\d$/.test(m[2]) ? new RegExp('(?:^|[\\s;&(])' + m[2] + '=(\\d+)\\s').exec(text.slice(0, sm.index + sm[0].length)) : null;
+      const pos = /^\d$/.test(m[2] || '') ? +m[2] : def && def[2] ? +def[2] : 0;
+      const v = m[1] ? +m[1] : env ? +env[1] : pos ? +(/^\d+$/.test(argv[pos - 1] || '') ? argv[pos - 1] : 0) : def && (def[1] || def[3]) ? +(def[1] || def[3]) : 0;
       if (v > best) best = v;
     }
     return best;

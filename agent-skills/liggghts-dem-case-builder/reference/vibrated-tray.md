@@ -68,6 +68,8 @@ fix floor all wall/gran model hertz tangential history rolling_friction cdt prim
 - 冲击：相邻帧速度变化估计碰撞速度分布，报告 50/99 分位。
 
 ## 6. 常见报错
+- `Volume expectancy too small`（particletemplate/sphere）：100 µm 级细颗粒必加 `volume_limit 1e-16`。
+- `Pair granular with shear history requires newton pair off`：`read_restart` 之后要重新写 `newton off`（restart 不保存这个设置）。
 - `Lost atoms`：时间步太大或颗粒飞出边界 → 检查 dt ≤ t_c/20、z 上界留足（≥ 2 cm）、`thermo_modify lost ignore` 只在确认是飞出时才用。
 - `Neighbor list overflow`：`neigh_modify one 2000 page 200000`。
 - `Mesh element has too many neighbours` / STL 法向问题：用 python 重新三角化，保证单位是 m（scale 1）。
